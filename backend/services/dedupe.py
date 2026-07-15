@@ -12,7 +12,7 @@ from PIL import Image
 from ..models import Photo
 
 _HASH_SIZE = 8
-_MAX_HAMMING = 12
+_MAX_HAMMING = 10
 
 
 def group(photos: list[Photo], paths: dict[str, Path]) -> list[Photo]:
@@ -50,7 +50,7 @@ def _average_hash(path: Optional[Path]) -> Optional[int]:
         return None
     try:
         with Image.open(path) as img:
-            small = img.convert("L").resize((_HASH_SIZE, _HASH_SIZE))
+            small = img.convert("L").resize((_HASH_SIZE, _HASH_SIZE), Image.Resampling.LANCZOS)
         bits = 0
         pixels = list(small.getdata())
         avg = sum(pixels) / len(pixels)

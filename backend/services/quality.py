@@ -17,6 +17,8 @@ _MIN_MEGAPIXELS = 0.75
 _PREFERRED_MEGAPIXELS = 4.0
 _MIN_SHORT_EDGE = 720
 _PREFERRED_SHORT_EDGE = 1600
+_CENTER_WEIGHT = 0.55
+_EDGE_WEIGHT = 0.45
 
 
 def _scale(value: float, low: float, high: float) -> float:
@@ -37,6 +39,79 @@ def _laplacian_variance(gray: np.ndarray) -> float:
         - (4 * center)
     )
     return float(np.var(laplacian))
+
+
+def _center_weight_score(gray: np.ndarray) -> float:
+    if gray.ndim != 2:
+        return 0.0
+    h, w = gray.shape
+    if h < 6 or w < 6:
+        return 0.0
+
+    y0, y1 = int(h * 0.2), int(h * 0.8)
+    x0, x1 = int(w * 0.2), int(w * 0.8)
+    center = gray[y0:y1, x0:x1]
+    if center.size == 0:
+        return 0.0
+
+    full_mean = float(np.mean(gray))
+    center_mean = float(np.mean(center))
+    contrast = abs(center_mean - full_mean) / 255.0
+    return max(0.0, min(1.0, 1.0 - contrast * 2.0))
+
+
+def _edge_balance_score(gray: np.ndarray) -> float:
+    if gray.ndim != 2:
+        return 0.0
+    h, w = gray.shape
+    if h < 8 or w < 8:
+        return 0.0
+
+    left = float(np.mean(gray[:, : w // 2]))
+    right = float(np.mean(gray[:, w // 2 :]))
+    top = float(np.mean(gray[: h // 2, :]))
+    bottom = float(np.mean(gray[h // 2 :, :]))
+    lr = abs(left - right) / 255.0
+    tb = abs(top - bottom) / 255.0
+    return max(0.0, min(1.0, 1.0 - ((lr + tb) / 2.0)))
+
+
+def _saturation_score(path: Path) -> float:
+    try:
+        with Image.open(path) as img:
+            rgb = ImageOps.exif_transpose(img).convert("RGB")
+            arr = np.asarray(rgb, dtype=np.float32) / 255.0
+            maxc = arr.max(axis=2)
+            minc = arr.min(axis=2)
+            sat = np.where(maxc == 0, 0.0, (maxc - minc) / np.maximum(maxc, 1e-6))
+            mean_sat = float(np.mean(sat))
+            # 너무 낮거나 너무 높은 채도 모두 감점
+            return max(0.0, min(1.0, 1.0 - abs(mean_sat - 0.42) / 0.42))
+    except Exception:
+        return 0.5
+
+
+def _face_hint_score(gray: np.ndarray) -> float:
+    # 얼굴 검출이 없는 환경에서, 인물 사진일 가능성을 간접적으로 추정.
+    if gray.ndim != 2:
+        return 0.0
+    h, w = gray.shape
+    if h < 8 or w < 8:
+        return 0.0
+
+    center = gray[int(h * 0.3):int(h * 0.7), int(w * 0.3):int(w * 0.7)]
+    border = np.concatenate([
+        gray[: max(1, int(h * 0.15)), :].ravel(),
+        gray[max(0, int(h * 0.85)) :, :].ravel(),
+        gray[:, : max(1, int(w * 0.15))].ravel(),
+        gray[:, max(0, int(w * 0.85)) :].ravel(),
+    ])
+    if center.size == 0 or border.size == 0:
+        return 0.0
+    center_std = float(np.std(center))
+    border_std = float(np.std(border))
+    # 중앙 디테일이 배경보다 더 많은 경우 인물/주제 중앙 배치로 간주
+    return max(0.0, min(1.0, (center_std - border_std + 15.0) / 30.0))
 
 
 def score(photo: Photo, path: Path) -> Photo:
@@ -65,8 +140,31 @@ def score(photo: Photo, path: Path) -> Photo:
             clipping_score = 1 - min(1.0, (darkness_ratio + highlight_ratio) / 0.35)
             exposure_score = (0.6 * brightness_score) + (0.4 * clipping_score)
 
-            total_score = (0.6 * sharpness_score) + (0.3 * resolution_score) + (0.1 * exposure_score)
+            composition_score = _center_weight_score(gray)
+            edge_balance = _edge_balance_score(gray)
+            saturation = _saturation_score(path)
+            face_hint = _face_hint_score(gray)
+
+            # 사진 culling에 맞춰 "보기 좋은 컷"을 우선. 선명도/구도/노출을 중심으로 구성.
+            total_score = (
+                (0.40 * sharpness_score)
+                + (0.20 * resolution_score)
+                + (0.15 * exposure_score)
+                + (0.15 * composition_score)
+                + (0.05 * edge_balance)
+                + (0.03 * saturation)
+                + (0.02 * face_hint)
+            )
+
             photo.quality_score = round(total_score, 3)
+            photo.sharpness_raw = round(sharpness_raw, 3)
+            photo.sharpness_score = round(sharpness_score, 3)
+            photo.resolution_score = round(resolution_score, 3)
+            photo.exposure_score = round(exposure_score, 3)
+            photo.composition_score = round(composition_score, 3)
+            photo.edge_balance_score = round(edge_balance, 3)
+            photo.saturation_score = round(saturation, 3)
+            photo.face_hint_score = round(face_hint, 3)
     except Exception:
         photo.quality_score = 0.5   # 판단 불가 → 중립
     return photo

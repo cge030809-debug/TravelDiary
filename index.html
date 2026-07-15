@@ -7,9 +7,10 @@
     <title>Travel Diary MVP</title>
     <link href="https://api.mapbox.com/mapbox-gl-js/v3.26.0/mapbox-gl.css" rel="stylesheet" />
     <link rel="stylesheet" href="styles.css" />
+    <script defer src="config.local.js"></script>
     <script src="https://api.mapbox.com/mapbox-gl-js/v3.26.0/mapbox-gl.js"></script>
     <!-- 로컬 설정(Mapbox 토큰 등). app.js 보다 먼저 실행되어야 함. config.local.js 는 gitignore 됨. -->
-    <script defer src="app.js"></script>
+    <script defer src="app.js?v=20260715a"></script>
   </head>
   <body>
     <main class="app-shell">
@@ -58,6 +59,7 @@
                 <button class="record-button photo-import-button" type="button" id="photo-import-button">
                   여행 사진 불러오기
                 </button>
+                <p class="photo-import-progress" id="photo-import-progress" hidden>업로드 준비 중</p>
               </div>
             </div>
           </div>
@@ -84,7 +86,10 @@
               <p class="eyebrow">시간순 기록</p>
               <h2 id="diary-title">여행 다이어리</h2>
             </div>
-            <div class="status-pill status-pill--complete">완료</div>
+            <div class="diary-actions">
+              <button class="status-pill status-pill--delete" type="button" id="delete-diary-button" aria-label="다이어리 삭제">🗑</button>
+              <button class="status-pill status-pill--complete" type="button" id="complete-diary-button" aria-label="다이어리 닫기">🅅</button>
+            </div>
           </div>
           <div class="timeline" id="timeline"></div>
         </section>

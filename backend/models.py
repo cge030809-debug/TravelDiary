@@ -63,6 +63,14 @@ class Photo(BaseModel):
     width: Optional[int] = None
     height: Optional[int] = None
     quality_score: Optional[float] = None
+    sharpness_raw: Optional[float] = None
+    sharpness_score: Optional[float] = None
+    resolution_score: Optional[float] = None
+    exposure_score: Optional[float] = None
+    composition_score: Optional[float] = None
+    edge_balance_score: Optional[float] = None
+    saturation_score: Optional[float] = None
+    face_hint_score: Optional[float] = None
     group_id: Optional[str] = None       # 유사사진 그룹 (dedupe)
 
 
@@ -71,6 +79,13 @@ class SelectedPhoto(BaseModel):
     photo_id: str
     photo_url: str
     reason: str = ""
+
+
+class PhotoFeedback(BaseModel):
+    """대표사진에 대한 사용자 선호 검증 결과."""
+    accepted_photo_ids: list[str] = Field(default_factory=list)
+    rejected_photo_ids: list[str] = Field(default_factory=list)
+    notes: Optional[str] = None
 
 
 # --- 처리 결과: 다이어리 (5번) -------------------------------------------

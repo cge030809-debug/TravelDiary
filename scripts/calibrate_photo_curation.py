@@ -28,7 +28,7 @@ def main() -> int:
     parser.add_argument(
         "folder",
         nargs="?",
-        default="uploads/pic",
+        default="/Users/idaehong/Desktop/pic1",
         help="Folder containing the sample photos.",
     )
     parser.add_argument(
