@@ -15,12 +15,16 @@ import uuid
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from . import config, pipeline, storage
 from .models import Diary, LocationBatch, TripCreate
 from .services import exif
 
 app = FastAPI(title="Travel Diary API", version="0.1.0")
+
+app.mount("/uploads", StaticFiles(directory=config.UPLOAD_DIR), name="uploads")
+app.mount("/outputs", StaticFiles(directory=config.OUTPUT_DIR), name="outputs")
 
 # 프런트(localhost:8000 정적 서버 등)에서 호출 허용. 배포 시 도메인을 좁히세요.
 app.add_middleware(

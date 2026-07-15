@@ -33,7 +33,7 @@ def select(photos: list[Photo], max_count: int = config.MAX_SELECTED_PHOTOS) -> 
     for photo, group_size in candidates[:max_count]:
         selected.append(SelectedPhoto(
             photo_id=photo.photo_id,
-            photo_url=f"/outputs/{photo.filename}",
+            photo_url=f"/uploads/{photo.filename}",
             reason=_reason(photo, group_size),
         ))
     return selected
