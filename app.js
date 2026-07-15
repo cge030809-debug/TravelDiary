@@ -1,4 +1,10 @@
 const MAPBOX_ACCESS_TOKEN = window.MAPBOX_ACCESS_TOKEN || '';
+const PHOTO_SPOT_RADIUS_M = 100;
+const PHOTO_SPOT_MIN_DURATION_MS = 10 * 60 * 1000;
+const PHOTO_SPOT_MIN_COUNT = 3;
+const PHOTO_SPOT_GAP_MS = 10 * 60 * 1000;
+const FOOTPRINT_MIN_DISTANCE_M = 12;
+const FOOTPRINT_MIN_GAP_MS = 8000;
 
 const state = {
   screen: 'create',
@@ -6,20 +12,23 @@ const state = {
   diaryUnlocked: false,
   recordingStartedAt: null,
   recordingTimer: null,
-  recordingBonusSeconds: 0,
-  recordingElapsed: 0,
   watchId: null,
+  recordingElapsed: 0,
+  recordingBonusSeconds: 0,
   map: null,
   currentMarker: null,
-  footprints: [],
+  footprintMarkers: [],
+  locationSamples: [],
   lastFootprintAt: 0,
   lastFootprintLngLat: null,
+  generatedDiary: null,
+  photoUrls: [],
   trip: {
     title: '탈린의 겨울 산책',
     date: '2026-07-15',
     region: '에스토니아 탈린',
   },
-  timeline: [
+  sampleTimeline: [
     {
       time: '오전 10시 30분',
       place: '탈린 항구',
@@ -61,6 +70,9 @@ const elements = {
   mapCanvas: document.getElementById('map'),
   recordingBadge: document.getElementById('recording-badge'),
   recordingTime: document.getElementById('recording-time'),
+  photoImportPanel: document.getElementById('photo-import-panel'),
+  photoImportButton: document.getElementById('photo-import-button'),
+  photoInput: document.getElementById('photo-input'),
   startRecording: document.getElementById('start-recording'),
   endRecording: document.getElementById('end-recording'),
   navButtons: Array.from(document.querySelectorAll('[data-nav]')),
@@ -139,14 +151,180 @@ function distanceMeters(a, b) {
   const dLng = toRad(lng2 - lng1);
   const sinLat = Math.sin(dLat / 2);
   const sinLng = Math.sin(dLng / 2);
-  const h = sinLat * sinLat + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * sinLng * sinLng;
+  const h =
+    sinLat * sinLat +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * sinLng * sinLng;
   return 2 * r * Math.asin(Math.min(1, Math.sqrt(h)));
+}
+
+function parseExifDate(dateString) {
+  if (!dateString || typeof dateString !== 'string') return null;
+  const normalized = dateString.trim().replace(/^(\d{4}):(\d{2}):(\d{2})/, '$1-$2-$3');
+  const match = normalized.match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/);
+  if (!match) return null;
+  const [, y, m, d, hh, mm, ss] = match;
+  return new Date(Number(y), Number(m) - 1, Number(d), Number(hh), Number(mm), Number(ss));
+}
+
+function readAscii(view, offset, length) {
+  let out = '';
+  for (let i = 0; i < length; i += 1) {
+    const code = view.getUint8(offset + i);
+    if (code === 0) break;
+    out += String.fromCharCode(code);
+  }
+  return out;
+}
+
+function readRational(view, offset, littleEndian) {
+  const num = view.getUint32(offset, littleEndian);
+  const den = view.getUint32(offset + 4, littleEndian);
+  return den ? num / den : 0;
+}
+
+function readSignedRational(view, offset, littleEndian) {
+  const num = view.getInt32(offset, littleEndian);
+  const den = view.getInt32(offset + 4, littleEndian);
+  return den ? num / den : 0;
+}
+
+function parseIfd(view, tiffStart, offset, littleEndian) {
+  const entries = {};
+  const entryCount = view.getUint16(offset, littleEndian);
+  for (let i = 0; i < entryCount; i += 1) {
+    const entryOffset = offset + 2 + i * 12;
+    const tag = view.getUint16(entryOffset, littleEndian);
+    const format = view.getUint16(entryOffset + 2, littleEndian);
+    const components = view.getUint32(entryOffset + 4, littleEndian);
+    const valueOffset = entryOffset + 8;
+    const bytesPerFormat = [0, 1, 1, 2, 4, 8, 1, 1, 4, 8];
+    const valueBytes = components * (bytesPerFormat[format] || 0);
+    const dataOffset = valueBytes > 4 ? tiffStart + view.getUint32(valueOffset, littleEndian) : valueOffset;
+
+    let value = null;
+    switch (format) {
+      case 1: // BYTE
+      case 7: // UNDEFINED
+        if (components === 1) {
+          value = view.getUint8(dataOffset);
+        } else {
+          value = Array.from({ length: components }, (_, idx) => view.getUint8(dataOffset + idx));
+        }
+        break;
+      case 2: // ASCII
+        value = readAscii(view, dataOffset, components);
+        break;
+      case 3: // SHORT
+        value = components === 1
+          ? view.getUint16(dataOffset, littleEndian)
+          : Array.from({ length: components }, (_, idx) => view.getUint16(dataOffset + idx * 2, littleEndian));
+        break;
+      case 4: // LONG
+        value = components === 1
+          ? view.getUint32(dataOffset, littleEndian)
+          : Array.from({ length: components }, (_, idx) => view.getUint32(dataOffset + idx * 4, littleEndian));
+        break;
+      case 5: // RATIONAL
+        value = Array.from({ length: components }, (_, idx) => readRational(view, dataOffset + idx * 8, littleEndian));
+        break;
+      case 10: // SRATIONAL
+        value = Array.from({ length: components }, (_, idx) => readSignedRational(view, dataOffset + idx * 8, littleEndian));
+        break;
+      default:
+        value = null;
+    }
+
+    entries[tag] = value;
+  }
+  return entries;
+}
+
+function parseExifBuffer(arrayBuffer) {
+  const view = new DataView(arrayBuffer);
+  if (view.byteLength < 4 || view.getUint16(0, false) !== 0xffd8) return {};
+
+  let offset = 2;
+  while (offset + 4 < view.byteLength) {
+    if (view.getUint8(offset) !== 0xff) break;
+    const marker = view.getUint8(offset + 1);
+    const size = view.getUint16(offset + 2, false);
+    if (marker === 0xe1) {
+      const header = readAscii(view, offset + 4, 4);
+      if (header !== 'Exif') break;
+      const tiffStart = offset + 10;
+      const byteOrder = readAscii(view, tiffStart, 2);
+      const littleEndian = byteOrder === 'II';
+      const firstIfdOffset = view.getUint32(tiffStart + 4, littleEndian);
+      const ifd0 = parseIfd(view, tiffStart, tiffStart + firstIfdOffset, littleEndian);
+      const exifOffset = ifd0[0x8769];
+      const gpsOffset = ifd0[0x8825];
+      const exifIfd = exifOffset ? parseIfd(view, tiffStart, tiffStart + exifOffset, littleEndian) : {};
+      const gpsIfd = gpsOffset ? parseIfd(view, tiffStart, tiffStart + gpsOffset, littleEndian) : {};
+
+      const dateString = exifIfd[0x9003] || ifd0[0x0132] || null;
+      const takenAt = parseExifDate(dateString);
+      const lat = parseGpsCoordinate(gpsIfd[1], gpsIfd[2], gpsIfd[3]);
+      const lng = parseGpsCoordinate(gpsIfd[3], gpsIfd[4], gpsIfd[5]);
+
+      return { takenAt, lat, lng };
+    }
+    offset += 2 + size;
+  }
+
+  return {};
+}
+
+function parseGpsCoordinate(ref, values, lonRef) {
+  const dir = typeof ref === 'string' ? ref : typeof lonRef === 'string' ? lonRef : null;
+  const nums = Array.isArray(values) ? values : null;
+  if (!dir || !nums || nums.length < 3) return null;
+  const [deg, min, sec] = nums;
+  let result = deg + min / 60 + sec / 3600;
+  if (dir === 'S' || dir === 'W') result *= -1;
+  return result;
+}
+
+function parsePhotoFile(file) {
+  return file.arrayBuffer().then((buffer) => {
+    const exif = parseExifBuffer(buffer);
+    return {
+      id: crypto.randomUUID ? crypto.randomUUID() : `photo_${Math.random().toString(16).slice(2)}`,
+      file,
+      url: URL.createObjectURL(file),
+      name: file.name,
+      takenAt: exif.takenAt || new Date(file.lastModified || Date.now()),
+      lat: exif.lat ?? null,
+      lng: exif.lng ?? null,
+    };
+  });
+}
+
+function findNearestLocationSample(targetTime) {
+  if (!state.locationSamples.length || !targetTime) return null;
+  let best = null;
+  let bestGap = Infinity;
+  for (const sample of state.locationSamples) {
+    const gap = Math.abs(sample.timestamp - targetTime.getTime());
+    if (gap < bestGap) {
+      bestGap = gap;
+      best = sample;
+    }
+  }
+  return best;
+}
+
+function centerMapOn(lngLat, zoom = 15.5) {
+  if (!state.map) return;
+  state.map.easeTo({
+    center: lngLat,
+    zoom,
+    duration: 700,
+  });
 }
 
 function updateTripTexts() {
   const { title, date, region } = state.trip;
-  const dateLabel = formatDateLabel(date);
-  const summary = `${title} · ${dateLabel} · ${region}`;
+  const summary = `${title} · ${formatDateLabel(date)} · ${region}`;
   elements.tripSummaryText.textContent = summary;
   elements.diarySummaryText.textContent = summary;
   document.title = `${title} · Travel Diary`;
@@ -159,7 +337,7 @@ function updateNavButtons() {
     if (target === 'diary') {
       const locked = !state.diaryUnlocked;
       button.disabled = locked;
-      button.title = locked ? '기록 종료 후 열 수 있어요.' : '다이어리 보기';
+      button.title = locked ? '사진을 불러와 다이어리를 생성한 뒤 열 수 있어요.' : '다이어리 보기';
       button.setAttribute('aria-disabled', String(locked));
     } else {
       button.disabled = false;
@@ -169,8 +347,7 @@ function updateNavButtons() {
 }
 
 function initMapIfNeeded() {
-  if (state.map || !window.mapboxgl) return;
-  if (!MAPBOX_ACCESS_TOKEN) return;
+  if (state.map || !window.mapboxgl || !MAPBOX_ACCESS_TOKEN) return;
   window.mapboxgl.accessToken = MAPBOX_ACCESS_TOKEN;
   state.map = new window.mapboxgl.Map({
     container: elements.mapCanvas,
@@ -200,6 +377,7 @@ function setScreen(screen) {
 function setMapState(mapState) {
   state.mapState = mapState;
   elements.recordingBadge.hidden = mapState !== 'recording';
+  elements.photoImportPanel.hidden = mapState !== 'after';
   elements.startRecording.hidden = mapState !== 'before';
   elements.endRecording.hidden = mapState !== 'recording';
 }
@@ -235,8 +413,8 @@ function stopTracking() {
 }
 
 function clearLiveMarkers() {
-  state.footprints.forEach((marker) => marker.remove());
-  state.footprints = [];
+  state.footprintMarkers.forEach((marker) => marker.remove());
+  state.footprintMarkers = [];
   if (state.currentMarker) {
     state.currentMarker.remove();
     state.currentMarker = null;
@@ -253,7 +431,7 @@ function addFootprint(lngLat) {
   })
     .setLngLat(lngLat)
     .addTo(state.map);
-  state.footprints.push(marker);
+  state.footprintMarkers.push(marker);
 }
 
 function ensureCurrentMarker(lngLat) {
@@ -268,35 +446,28 @@ function ensureCurrentMarker(lngLat) {
   state.currentMarker.setLngLat(lngLat);
 }
 
-function centerMapOn(lngLat, zoom = 15.5) {
-  if (!state.map) return;
-  state.map.easeTo({
-    center: lngLat,
-    zoom,
-    duration: 700,
-  });
-}
-
 function handlePosition(position) {
   const lngLat = [position.coords.longitude, position.coords.latitude];
-  const now = position.timestamp || Date.now();
-  state.recordingElapsed = Math.max(
-    0,
-    Math.floor((now - state.recordingStartedAt) / 1000) + state.recordingBonusSeconds,
-  );
-  updateRecordingTimer();
+  const timestamp = position.timestamp || Date.now();
+  state.locationSamples.push({
+    lng: lngLat[0],
+    lat: lngLat[1],
+    timestamp,
+  });
+
   ensureCurrentMarker(lngLat);
   centerMapOn(lngLat);
+  updateRecordingTimer();
 
   const shouldDropFootprint =
     !state.lastFootprintLngLat ||
-    distanceMeters(state.lastFootprintLngLat, lngLat) >= 12 ||
-    now - state.lastFootprintAt >= 8000;
+    distanceMeters(state.lastFootprintLngLat, lngLat) >= FOOTPRINT_MIN_DISTANCE_M ||
+    timestamp - state.lastFootprintAt >= FOOTPRINT_MIN_GAP_MS;
 
   if (shouldDropFootprint) {
     addFootprint(lngLat);
     state.lastFootprintLngLat = lngLat;
-    state.lastFootprintAt = now;
+    state.lastFootprintAt = timestamp;
   }
 }
 
@@ -306,12 +477,10 @@ function handlePositionError(error) {
   state.recordingElapsed = 0;
   state.recordingBonusSeconds = 0;
   setMapState('before');
-
   const message =
     error && error.code === 1
       ? '위치 권한이 필요합니다. 브라우저에서 위치 사용을 허용해 주세요.'
-      : '현재 위치를 불러오지 못했어요. 위치 서비스가 켜져 있는지 확인해 주세요.';
-
+      : '현재 위치를 불러오지 못했어요. 위치 서비스 상태를 확인해 주세요.';
   showToast(message);
 }
 
@@ -320,61 +489,186 @@ function startRecording() {
     showToast('이 브라우저는 위치 기록을 지원하지 않아요.');
     return;
   }
-
-  if (!window.mapboxgl) {
-    showToast('지도를 불러오는 중이에요. 잠시 후 다시 시도해 주세요.');
+  if (!window.mapboxgl || !MAPBOX_ACCESS_TOKEN) {
+    showToast('지도를 불러올 토큰이 아직 설정되지 않았어요.');
     return;
   }
 
   if (!state.map) {
     initMapIfNeeded();
   }
-
   if (!state.map) {
-    showToast('지도 토큰이 설정되지 않았어요.');
+    showToast('지도를 아직 불러오지 못했어요.');
     return;
   }
 
   clearLiveMarkers();
+  state.locationSamples = [];
+  state.generatedDiary = null;
   state.diaryUnlocked = false;
+  updateNavButtons();
+
+  stopTracking();
   state.recordingStartedAt = Date.now();
   state.recordingBonusSeconds = 0;
   state.recordingElapsed = 0;
   updateRecordingTimer();
   setMapState('recording');
-  updateNavButtons();
 
-  stopTracking();
-
-  state.watchId = navigator.geolocation.watchPosition(
-    handlePosition,
-    handlePositionError,
-    {
-      enableHighAccuracy: true,
-      maximumAge: 1000,
-      timeout: 15000,
-    },
-  );
+  state.watchId = navigator.geolocation.watchPosition(handlePosition, handlePositionError, {
+    enableHighAccuracy: true,
+    maximumAge: 1000,
+    timeout: 15000,
+  });
 
   state.recordingTimer = window.setInterval(updateRecordingTimer, 1000);
 }
 
 function endRecording() {
   stopTracking();
-  state.diaryUnlocked = true;
-  updateNavButtons();
-  setMapState('after');
   updateRecordingTimer();
-  showToast('오늘의 여정이 다이어리로 정리되었습니다');
-  window.setTimeout(() => {
-    setScreen('diary');
-  }, 900);
+  setMapState('after');
+  showToast('여행 사진 불러오기 버튼을 눌러 사진첩에서 사진을 선택해 주세요');
 }
 
-function renderTimeline() {
-  elements.timeline.innerHTML = state.timeline
-    .map(
-      (entry) => `
+function buildClusters(photos) {
+  const groups = [];
+  for (const photo of photos) {
+    const lastGroup = groups[groups.length - 1];
+    const photoPoint = [photo.lng, photo.lat];
+    const photoTime = photo.takenAt.getTime();
+    if (lastGroup) {
+      const gap = photoTime - lastGroup.lastTakenAt;
+      const distance = distanceMeters(lastGroup.center, photoPoint);
+      if (gap <= PHOTO_SPOT_GAP_MS && distance <= PHOTO_SPOT_RADIUS_M) {
+        lastGroup.photos.push(photo);
+        lastGroup.lastTakenAt = photoTime;
+        lastGroup.center = [
+          (lastGroup.center[0] * (lastGroup.photos.length - 1) + photo.lng) / lastGroup.photos.length,
+          (lastGroup.center[1] * (lastGroup.photos.length - 1) + photo.lat) / lastGroup.photos.length,
+        ];
+        continue;
+      }
+    }
+    groups.push({
+      photos: [photo],
+      center: photoPoint,
+      firstTakenAt: photoTime,
+      lastTakenAt: photoTime,
+    });
+  }
+  return groups;
+}
+
+async function resolvePlaceName(lng, lat, fallbackLabel) {
+  if (!MAPBOX_ACCESS_TOKEN) return fallbackLabel;
+  try {
+    const endpoint = new URL(`https://api.mapbox.com/geocoding/v5/mapbox.places/${lng},${lat}.json`);
+    endpoint.searchParams.set('access_token', MAPBOX_ACCESS_TOKEN);
+    endpoint.searchParams.set('language', 'ko');
+    endpoint.searchParams.set('types', 'place,address,poi');
+    endpoint.searchParams.set('limit', '1');
+    const response = await fetch(endpoint.toString());
+    if (!response.ok) return fallbackLabel;
+    const data = await response.json();
+    const feature = data.features && data.features[0];
+    return feature?.place_name || fallbackLabel;
+  } catch {
+    return fallbackLabel;
+  }
+}
+
+function formatTimeLabel(date) {
+  return new Intl.DateTimeFormat('ko-KR', {
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(date);
+}
+
+function formatDateTimeLabel(date) {
+  return new Intl.DateTimeFormat('ko-KR', {
+    month: 'long',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(date);
+}
+
+async function generateDiaryFromFiles(files) {
+  const parsed = await Promise.all(files.map(parsePhotoFile));
+  const photoData = parsed
+    .map((photo) => {
+      if ((!photo.lat || !photo.lng) && photo.takenAt) {
+        const nearest = findNearestLocationSample(photo.takenAt);
+        if (nearest) {
+          photo.lat = nearest.lat;
+          photo.lng = nearest.lng;
+        }
+      }
+      return photo;
+    })
+    .filter((photo) => photo.takenAt && Number.isFinite(photo.lat) && Number.isFinite(photo.lng));
+
+  if (!photoData.length) {
+    showToast('촬영 시간과 위치 정보를 읽을 수 있는 사진이 필요해요.');
+    return;
+  }
+
+  cleanupGeneratedPhotoUrls();
+  state.photoUrls = photoData.map((photo) => photo.url);
+
+  photoData.sort((a, b) => a.takenAt - b.takenAt);
+  const clusters = buildClusters(photoData);
+  const qualifying = clusters.filter((cluster) => {
+    const duration = cluster.lastTakenAt - cluster.firstTakenAt;
+    return cluster.photos.length >= PHOTO_SPOT_MIN_COUNT && duration >= PHOTO_SPOT_MIN_DURATION_MS;
+  });
+
+  const targetClusters = qualifying.length ? qualifying : clusters.slice(0, 1);
+  const entries = [];
+
+  for (let i = 0; i < targetClusters.length; i += 1) {
+    const cluster = targetClusters[i];
+    const firstPhoto = cluster.photos[0];
+    const durationMinutes = Math.max(1, Math.round((cluster.lastTakenAt - cluster.firstTakenAt) / 60000));
+    const timeLabel = formatTimeLabel(firstPhoto.takenAt);
+    const fallbackPlace = `기록 스팟 ${i + 1}`;
+    const place = await resolvePlaceName(cluster.center[0], cluster.center[1], fallbackPlace);
+    const photoCount = cluster.photos.length;
+    const photoUrls = cluster.photos.map((photo) => photo.url);
+    entries.push({
+      time: timeLabel,
+      place,
+      note: `반경 ${PHOTO_SPOT_RADIUS_M}m 안에서 ${durationMinutes}분 동안 머무르며 사진 ${photoCount}장을 기록했어요.`,
+      photoCount,
+      photoUrls,
+      mainPhoto: photoUrls[0],
+      center: cluster.center,
+      timestamp: firstPhoto.takenAt,
+      durationMinutes,
+    });
+  }
+
+  state.generatedDiary = entries;
+  state.diaryUnlocked = true;
+  updateNavButtons();
+  renderTimeline(entries);
+  setScreen('diary');
+  showToast('오늘의 여정이 다이어리로 정리되었습니다');
+}
+
+function renderTimeline(entries = state.generatedDiary || state.sampleTimeline) {
+  elements.timeline.innerHTML = entries
+    .map((entry, index) => {
+      const gallery = Array.isArray(entry.photoUrls)
+        ? `
+          <div class="timeline-gallery">
+            ${entry.photoUrls.slice(0, 4).map((url) => `<img class="timeline-thumb" src="${url}" alt="${entry.place} 사진" />`).join('')}
+          </div>
+        `
+        : '';
+      const preview = entry.mainPhoto || entry.image || '';
+      return `
         <article class="timeline-entry">
           <div class="timeline-rail">
             <div class="timeline-dot"></div>
@@ -382,21 +676,30 @@ function renderTimeline() {
           <div class="timeline-card">
             <div class="timeline-meta">
               <p class="timeline-time">${entry.time}</p>
-              <button class="timeline-button" type="button" data-view-map>지도에서 보기</button>
+              <button class="timeline-button" type="button" data-view-map="${index}">지도에서 보기</button>
             </div>
             <h3 class="timeline-place">${entry.place}</h3>
-            <img class="timeline-photo" src="${entry.image}" alt="${entry.place} 사진" />
+            <div class="timeline-photo-row">
+              <p class="timeline-count">${entry.photoCount ? `사진 ${entry.photoCount}장` : ''}</p>
+              <p class="timeline-count">${entry.durationMinutes ? `${entry.durationMinutes}분 기록` : ''}</p>
+            </div>
+            ${preview ? `<img class="timeline-photo" src="${preview}" alt="${entry.place} 대표 사진" />` : ''}
+            ${gallery}
             <p class="timeline-note">${entry.note}</p>
           </div>
         </article>
-      `,
-    )
+      `;
+    })
     .join('');
 
   elements.timeline.querySelectorAll('[data-view-map]').forEach((button) => {
     button.addEventListener('click', () => {
+      const index = Number(button.dataset.viewMap);
+      const entry = entries[index];
       setScreen('map');
-      setMapState('after');
+      if (entry?.center && state.map) {
+        centerMapOn(entry.center, 16.5);
+      }
     });
   });
 }
@@ -410,12 +713,22 @@ function syncCreateFields() {
 function createTrip() {
   const nextTitle = elements.tripTitle.value.trim();
   const nextRegion = elements.tripRegion.value.trim();
+  cleanupGeneratedPhotoUrls();
+  stopTracking();
   state.trip = {
     title: nextTitle || '새 여행',
     date: elements.tripDate.value,
     region: nextRegion || '미정 지역',
   };
+  state.generatedDiary = null;
+  state.diaryUnlocked = false;
+  state.locationSamples = [];
+  state.recordingStartedAt = null;
+  state.recordingElapsed = 0;
+  state.recordingBonusSeconds = 0;
+  clearLiveMarkers();
   updateTripTexts();
+  renderTimeline();
   setScreen('map');
   setMapState('before');
 }
@@ -423,6 +736,14 @@ function createTrip() {
 function handleNav(target) {
   if (target === 'diary' && !state.diaryUnlocked) return;
   setScreen(target);
+  if (target === 'map') {
+    setMapState(state.mapState);
+  }
+}
+
+function cleanupGeneratedPhotoUrls() {
+  state.photoUrls.forEach((url) => URL.revokeObjectURL(url));
+  state.photoUrls = [];
 }
 
 function bootstrap() {
@@ -431,6 +752,7 @@ function bootstrap() {
   renderTimeline();
   setScreen('create');
   setMapState('before');
+  updateRecordingTimer();
 
   elements.createForm.addEventListener('submit', (event) => {
     event.preventDefault();
@@ -439,9 +761,24 @@ function bootstrap() {
   elements.createTripButton.addEventListener('click', createTrip);
   elements.startRecording.addEventListener('click', startRecording);
   elements.endRecording.addEventListener('click', endRecording);
+  elements.photoImportButton.addEventListener('click', () => {
+    elements.photoInput.value = '';
+    elements.photoInput.click();
+  });
+  elements.photoInput.addEventListener('change', async () => {
+    const files = Array.from(elements.photoInput.files || []).filter((file) => file.type.startsWith('image/'));
+    if (!files.length) return;
+    try {
+      await generateDiaryFromFiles(files);
+    } catch (error) {
+      console.error(error);
+      showToast('사진 처리 중 오류가 발생했어요.');
+    }
+  });
   elements.navButtons.forEach((button) => {
     button.addEventListener('click', () => handleNav(button.dataset.nav));
   });
 }
 
+window.addEventListener('beforeunload', cleanupGeneratedPhotoUrls);
 bootstrap();

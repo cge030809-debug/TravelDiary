@@ -61,10 +61,7 @@ def build_route(points: Sequence[_RoutePoint]) -> Route:
 
 
 def build_route_from_photos(photos: Sequence[Photo]) -> Route | None:
-    """Build a route from photo EXIF GPS/time metadata.
-
-    Returns ``None`` when there are not enough usable photo points yet.
-    """
+    """Build a route from photo EXIF GPS/time metadata."""
     points = [
         LocationPoint(lat=float(photo.lat), lng=float(photo.lng), time=photo.taken_at)
         for photo in photos

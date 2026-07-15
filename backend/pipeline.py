@@ -25,9 +25,12 @@ def generate(trip_id: str) -> Diary:
 
     entries = timeline.build(trip_route, selected, photos)
     entries = diary.annotate(entries)
+    region = storage.get_meta(trip_id).get("region", "")
+    title = diary.make_title(entries, region=region)
 
     result = Diary(
         trip_id=trip_id,
+        title=title,
         route=trip_route,
         selected_photos=selected,
         timeline=entries,

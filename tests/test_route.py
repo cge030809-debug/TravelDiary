@@ -6,7 +6,17 @@ from backend.models import LocationPoint, Photo
 from backend.services.route import build_route, build_route_from_photos
 
 
-def test_build_route_uses_gps_points_and_stop_threshold():
+def _pt(lat: float, lng: float, hour: int) -> LocationPoint:
+    return LocationPoint(lat=lat, lng=lng, time=datetime(2026, 7, 15, hour, tzinfo=timezone.utc))
+
+
+def test_build_route_empty():
+    route = build_route([])
+    assert route.distance_m == 0
+    assert route.duration_sec == 0
+
+
+def test_build_route_distance_duration_and_stop_threshold():
     start = datetime(2026, 7, 15, 9, 0, tzinfo=timezone.utc)
     points = [
         LocationPoint(lat=37.0, lng=127.0, time=start),
