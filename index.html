@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="ko">
   <head>
     <meta charset="UTF-8" />
@@ -17,14 +17,14 @@
       <section class="screen screen--create" data-screen="create" aria-labelledby="create-title">
         <div class="brand-badge">Travel Diary</div>
         <div class="hero-copy">
-          <h1 id="create-title">새 여행 시작</h1>
-          <p>여행 제목과 기본 정보를 입력하고 기록을 시작해 보세요.</p>
+          <h1 id="create-title">새 여행 만들기</h1>
+          <p>여행의 시작과 끝을 한 장의 지도와 한 권의 다이어리로 남겨보세요.</p>
         </div>
 
         <form class="card form-card" id="create-form">
           <label>
             <span>여행 제목</span>
-            <input id="trip-title" name="tripTitle" type="text" placeholder="예: 탈린의 겨울 산책" required />
+            <input id="trip-title" name="tripTitle" type="text" placeholder="예: 늦여름 탈린 여행" required />
           </label>
           <label>
             <span>여행 날짜</span>
@@ -41,8 +41,9 @@
       <section class="screen screen--map" data-screen="map" hidden aria-labelledby="map-title">
         <header class="top-bar">
           <div class="segment-tabs" aria-label="화면 전환">
+            <button class="segment-button" type="button" data-nav="create">Home</button>
             <button class="segment-button is-active" type="button" data-nav="map">지도</button>
-            <button class="segment-button" type="button" data-nav="diary" disabled aria-disabled="true">다이어리</button>
+            <button class="segment-button" type="button" data-nav="diary">다이어리</button>
           </div>
           <div class="trip-chip" id="trip-summary-text"></div>
           <div class="map-toolbar">
@@ -79,6 +80,7 @@
       <section class="screen screen--diary" data-screen="diary" hidden aria-labelledby="diary-title">
         <header class="top-bar">
           <div class="segment-tabs" aria-label="화면 전환">
+            <button class="segment-button" type="button" data-nav="create">Home</button>
             <button class="segment-button" type="button" data-nav="map">지도</button>
             <button class="segment-button is-active" type="button" data-nav="diary">다이어리</button>
           </div>
@@ -102,7 +104,7 @@
     </main>
 
     <div class="toast" id="toast" hidden role="status" aria-live="polite">
-      <p>오늘의 여정이 다이어리로 정리되었습니다</p>
+      <p>오늘의 여정이 다이어리로 정리되었습니다.</p>
     </div>
 
     <div class="calendar-modal" id="calendar-modal" hidden>
@@ -124,7 +126,7 @@
           <span>일</span><span>월</span><span>화</span><span>수</span><span>목</span><span>금</span><span>토</span>
         </div>
         <div class="calendar-grid" id="calendar-grid"></div>
-        <p class="calendar-empty" id="calendar-empty">저장된 기록이 있는 날짜를 눌러 보세요.</p>
+        <p class="calendar-empty" id="calendar-empty">저장된 기록이 없는 날짜를 눌러 보세요.</p>
       </section>
     </div>
 

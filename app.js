@@ -1,4 +1,4 @@
-const MAPBOX_ACCESS_TOKEN = window.MAPBOX_ACCESS_TOKEN || '';
+﻿const MAPBOX_ACCESS_TOKEN = window.MAPBOX_ACCESS_TOKEN || '';
 const STORAGE_KEY = 'travel-diary.trips.v1';
 const PHOTO_SPOT_RADIUS_M = 100;
 const PHOTO_SPOT_MIN_DURATION_MS = 10 * 60 * 1000;
@@ -32,7 +32,7 @@ const state = {
   calendarOpen: false,
   calendarMonth: null,
   trip: {
-    title: '탈린의 겨울 산책',
+    title: '늦여름 탈린 여행',
     date: '2026-07-15',
     region: '에스토니아 탈린',
   },
@@ -46,19 +46,19 @@ const state = {
     {
       time: '오전 11시 20분',
       place: '비루 게이트',
-      note: '구시가지 입구에서 발자국 경로가 가장 선명하게 보였어요.',
+      note: '구시가지 골목 사이로 햇살이 깊게 들어와 오래 머물렀어요.',
       image: makePhotoData('비루 게이트', '#e9d2b7', '#bb7251'),
     },
     {
       time: '오후 12시 10분',
       place: '탈린 시청 광장',
-      note: '광장 한복판의 따뜻한 점심 시간 분위기를 기록했어요.',
+      note: '광장 주변의 소란스러움과 여유로움이 함께 느껴진 순간이었어요.',
       image: makePhotoData('탈린 시청 광장', '#ecd8c8', '#cf8a63'),
     },
     {
       time: '오후 2시',
       place: '코투오차 전망대',
-      note: '도시 전체가 내려다보이는 마지막 장면을 남겼어요.',
+      note: '도시 전체가 한눈에 내려다보이는 마지막 풍경이 가장 인상적이었어요.',
       image: makePhotoData('코투오차 전망대', '#dcc5ad', '#a85f46'),
     },
   ],
@@ -117,7 +117,7 @@ function makePhotoData(title, baseColor, accentColor) {
 }
 
 function formatDateLabel(dateValue) {
-  if (!dateValue) return '날짜를 선택해 주세요';
+  if (!dateValue) return '날짜를 선택해 주세요.';
   const date = new Date(dateValue);
   if (Number.isNaN(date.getTime())) return dateValue;
   return new Intl.DateTimeFormat('ko-KR', {
@@ -300,7 +300,7 @@ function renderCalendar() {
     if (dateKey === selectedDateKey) button.classList.add('is-selected');
     button.innerHTML = `
       <span class="calendar-day-number">${formatCalendarDay(dayDate)}</span>
-      <span class="calendar-day-label">${trip ? trip.title : '기록 없음'}</span>
+      <span class="calendar-day-label">${trip ? trip.title : '湲곕줉 ?놁쓬'}</span>
     `;
     if (trip) {
       button.addEventListener('click', () => {
@@ -324,7 +324,7 @@ function readSavedTrips() {
     if (!Array.isArray(parsed)) return [];
     return parsed.map((trip) => ({
       id: trip.id,
-      title: trip.title || '여행',
+      title: trip.title || '새 여행',
       date: trip.date || '',
       region: trip.region || '미정 지역',
       createdAt: trip.createdAt || new Date().toISOString(),
@@ -674,7 +674,7 @@ function renderTripOnMap(trip) {
 function renderTripHistory() {
   if (!elements.tripHistory) return;
   if (!state.savedTrips.length) {
-    elements.tripHistory.innerHTML = '<span class="trip-chip">저장된 여행이 아직 없어요</span>';
+    elements.tripHistory.innerHTML = '<span class="trip-chip">저장된 여행이 아직 없어요.</span>';
     return;
   }
 
@@ -708,14 +708,10 @@ function updateNavButtons() {
   elements.navButtons.forEach((button) => {
     const target = button.dataset.nav;
     button.classList.toggle('is-active', state.screen === target);
+    button.disabled = false;
+    button.removeAttribute('aria-disabled');
     if (target === 'diary') {
-      const locked = !state.diaryUnlocked;
-      button.disabled = locked;
-      button.title = locked ? '사진을 불러와 다이어리를 생성한 뒤 열 수 있어요.' : '다이어리 보기';
-      button.setAttribute('aria-disabled', String(locked));
-    } else {
-      button.disabled = false;
-      button.removeAttribute('aria-disabled');
+      button.title = '다이어리 보기';
     }
   });
 }
@@ -886,7 +882,7 @@ function handlePositionError(error) {
   setMapState('before');
   const message =
     error && error.code === 1
-      ? '위치 권한이 필요합니다. 브라우저에서 위치 사용을 허용해 주세요.'
+      ? '위치 권한이 필요해요. 브라우저에서 위치 사용을 허용해 주세요.'
       : '현재 위치를 불러오지 못했어요. 위치 서비스 상태를 확인해 주세요.';
   showToast(message);
 }
@@ -1086,7 +1082,7 @@ async function generateDiaryFromFiles(files) {
   renderTripHistory();
   renderTimeline(entries);
   setScreen('diary');
-  showToast('오늘의 여정이 다이어리로 정리되었습니다');
+  showToast('오늘의 여정이 다이어리로 정리되었습니다.');
 }
 
 function renderTimeline(entries = state.generatedDiary || state.sampleTimeline) {
@@ -1191,6 +1187,16 @@ function createTrip() {
 }
 
 function handleNav(target) {
+  if (target === 'diary') {
+    const trip = syncSelectedTripView();
+    closeCalendar();
+    setScreen('diary');
+    renderTimeline(state.generatedDiary || state.sampleTimeline);
+    if (trip && state.map && trip.id === state.selectedTripId) {
+      renderTripOnMap(trip);
+    }
+    return;
+  }
   if (target === 'diary' && !state.diaryUnlocked) return;
   const trip = target === 'map' || target === 'diary' ? syncSelectedTripView() : null;
   closeCalendar();
