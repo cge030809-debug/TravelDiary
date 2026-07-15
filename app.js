@@ -1,4 +1,5 @@
 const MAPBOX_ACCESS_TOKEN = window.MAPBOX_ACCESS_TOKEN || '';
+const API_BASE_URL = window.API_BASE_URL || '';
 const PHOTO_SPOT_RADIUS_M = 100;
 const PHOTO_SPOT_MIN_DURATION_MS = 10 * 60 * 1000;
 const PHOTO_SPOT_MIN_COUNT = 3;
@@ -10,6 +11,7 @@ const state = {
   screen: 'create',
   mapState: 'before',
   diaryUnlocked: false,
+  tripId: null,
   recordingStartedAt: null,
   recordingTimer: null,
   watchId: null,
@@ -328,6 +330,11 @@ function updateTripTexts() {
   elements.tripSummaryText.textContent = summary;
   elements.diarySummaryText.textContent = summary;
   document.title = `${title} · Travel Diary`;
+}
+
+function buildApiUrl(path) {
+  if (!API_BASE_URL) return path;
+  return `${API_BASE_URL.replace(/\/$/, '')}${path}`;
 }
 
 function updateNavButtons() {
@@ -715,22 +722,62 @@ function createTrip() {
   const nextRegion = elements.tripRegion.value.trim();
   cleanupGeneratedPhotoUrls();
   stopTracking();
-  state.trip = {
+  const nextTrip = {
     title: nextTitle || '새 여행',
     date: elements.tripDate.value,
     region: nextRegion || '미정 지역',
   };
-  state.generatedDiary = null;
-  state.diaryUnlocked = false;
-  state.locationSamples = [];
-  state.recordingStartedAt = null;
-  state.recordingElapsed = 0;
-  state.recordingBonusSeconds = 0;
-  clearLiveMarkers();
-  updateTripTexts();
-  renderTimeline();
-  setScreen('map');
-  setMapState('before');
+
+  const resetLocalState = () => {
+    state.trip = nextTrip;
+    state.generatedDiary = null;
+    state.diaryUnlocked = false;
+    state.locationSamples = [];
+    state.recordingStartedAt = null;
+    state.recordingElapsed = 0;
+    state.recordingBonusSeconds = 0;
+    state.tripId = null;
+    clearLiveMarkers();
+    updateTripTexts();
+    renderTimeline();
+    setScreen('map');
+    setMapState('before');
+  };
+
+  resetLocalState();
+
+  if (!API_BASE_URL) {
+    showToast('API 주소가 없어 로컬 모드로 여행을 시작했어요.');
+    return;
+  }
+
+  fetch(buildApiUrl('/api/trips'), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      title: nextTrip.title,
+      start_date: nextTrip.date,
+      region: nextTrip.region,
+    }),
+  })
+    .then(async (response) => {
+      if (!response.ok) {
+        throw new Error(`Failed to create trip: ${response.status}`);
+      }
+      return response.json();
+    })
+    .then((data) => {
+      state.tripId = data.trip_id || null;
+      if (state.tripId) {
+        showToast('여행이 서버에 생성되었어요. 이제 사진을 올릴 수 있어요.');
+      }
+    })
+    .catch((error) => {
+      console.error(error);
+      showToast('여행 생성 API 연결은 실패했지만, 로컬 화면은 사용할 수 있어요.');
+    });
 }
 
 function handleNav(target) {
@@ -744,6 +791,26 @@ function handleNav(target) {
 function cleanupGeneratedPhotoUrls() {
   state.photoUrls.forEach((url) => URL.revokeObjectURL(url));
   state.photoUrls = [];
+}
+
+async function uploadPhotosToApi(files) {
+  if (!API_BASE_URL || !state.tripId) return;
+
+  const formData = new FormData();
+  files.forEach((file) => {
+    formData.append('files', file);
+  });
+
+  const response = await fetch(buildApiUrl(`/api/trips/${state.tripId}/photos`), {
+    method: 'POST',
+    body: formData,
+  });
+
+  if (!response.ok) {
+    throw new Error(`Photo upload failed: ${response.status}`);
+  }
+
+  return response.json();
 }
 
 function bootstrap() {
@@ -769,10 +836,11 @@ function bootstrap() {
     const files = Array.from(elements.photoInput.files || []).filter((file) => file.type.startsWith('image/'));
     if (!files.length) return;
     try {
+      await uploadPhotosToApi(files);
       await generateDiaryFromFiles(files);
     } catch (error) {
       console.error(error);
-      showToast('사진 처리 중 오류가 발생했어요.');
+      showToast('사진 업로드 또는 처리 중 오류가 발생했어요.');
     }
   });
   elements.navButtons.forEach((button) => {
