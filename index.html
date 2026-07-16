@@ -23,7 +23,6 @@
           <p>여행 제목과 기본 정보를 입력하고 기록을 시작해 보세요.</p>
           <div class="hero-actions">
             <button class="secondary-button" type="button" id="open-diary-button" data-nav="diary">다이어리 바로가기</button>
-            <button class="secondary-button" type="button" id="create-photo-import-button">여행 사진 업로드</button>
           </div>
         </div>
 
@@ -40,7 +39,11 @@
             <span>여행 지역 <span style="font-size: 0.85em; color: #999;">(선택)</span></span>
             <input id="trip-region" name="tripRegion" type="text" placeholder="예: 에스토니아 탈린" />
           </label>
-          <button class="primary-button" type="button" id="create-trip-button">여행 시작</button>
+          <div class="mode-actions">
+            <button class="primary-button" type="button" id="create-trip-button">🔴 실시간 기록 시작</button>
+            <button class="secondary-button" type="button" id="create-upload-button">📷 사진으로 만들기</button>
+          </div>
+          <p class="mode-hint">여행 중이면 <b>실시간 기록</b>, 이미 찍은 사진이 있으면 <b>사진으로 만들기</b>를 선택하세요.</p>
         </form>
       </section>
 
@@ -80,6 +83,7 @@
 
           <div class="map-controls">
             <button class="record-button" type="button" id="start-recording">기록 시작</button>
+            <button class="record-button record-button--live-photo" type="button" id="live-photo-button" hidden>📷 현장 사진</button>
             <button class="record-button record-button--end" type="button" id="end-recording" hidden>기록 종료</button>
           </div>
         </section>
@@ -142,5 +146,6 @@
     </div>
 
     <input id="photo-input" type="file" accept="image/*" multiple hidden />
+    <input id="live-photo-input" type="file" accept="image/*" capture="environment" hidden />
   </body>
 </html>

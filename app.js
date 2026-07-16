@@ -96,6 +96,9 @@ const elements = {
   photoImportButton: document.getElementById('photo-import-button'),
   photoImportProgress: document.getElementById('photo-import-progress'),
   photoInput: document.getElementById('photo-input'),
+  createUploadButton: document.getElementById('create-upload-button'),
+  livePhotoButton: document.getElementById('live-photo-button'),
+  livePhotoInput: document.getElementById('live-photo-input'),
   startRecording: document.getElementById('start-recording'),
   endRecording: document.getElementById('end-recording'),
   deleteDiaryButton: document.getElementById('delete-diary-button'),
@@ -754,6 +757,12 @@ function renderTripOnMap(trip) {
     addFootprint([point.lng, point.lat]);
   });
 
+  (trip?.recording?.livePhotos || []).forEach((photo) => {
+    if (photo.dataUrl && Number.isFinite(photo.lng) && Number.isFinite(photo.lat)) {
+      addLivePhotoMarker([photo.lng, photo.lat], photo.dataUrl);
+    }
+  });
+
   const last = samples[samples.length - 1];
   if (last) {
     ensureCurrentMarker([last.lng, last.lat]);
@@ -859,10 +868,14 @@ function setMapState(mapState) {
   elements.photoImportPanel.hidden = !(mapState === 'after' && isActiveTrip);
   elements.startRecording.hidden = mapState !== 'before' || !isActiveTrip;
   elements.endRecording.hidden = mapState !== 'recording';
+  if (elements.livePhotoButton) {
+    elements.livePhotoButton.hidden = mapState !== 'recording';
+  }
   if (!isActiveTrip) {
     elements.startRecording.hidden = true;
     elements.endRecording.hidden = true;
     elements.photoImportPanel.hidden = true;
+    if (elements.livePhotoButton) elements.livePhotoButton.hidden = true;
   }
 }
 
@@ -1576,6 +1589,72 @@ function createTrip() {
     });
 }
 
+// 홈 화면 두 갈래: 실시간 기록 / 사진 업로드
+function startRealtimeTrip() {
+  createTrip();
+  startRecording();
+}
+
+function startUploadTrip() {
+  createTrip();
+  elements.photoInput.value = '';
+  elements.photoInput.click();
+}
+
+// 현재 위치 좌표 얻기 (최근 GPS 샘플 우선, 없으면 현재 마커)
+function getCurrentLngLat() {
+  const last = state.locationSamples[state.locationSamples.length - 1];
+  if (last && Number.isFinite(last.lng) && Number.isFinite(last.lat)) {
+    return [last.lng, last.lat];
+  }
+  if (state.currentMarker) {
+    const p = state.currentMarker.getLngLat();
+    return [p.lng, p.lat];
+  }
+  return null;
+}
+
+// 지도에 현장 사진 마커 추가
+function addLivePhotoMarker(lngLat, dataUrl) {
+  if (!state.map || !window.mapboxgl) return;
+  const el = document.createElement('div');
+  el.className = 'live-photo-marker';
+  el.innerHTML = `<img src="${dataUrl}" alt="현장 사진" />`;
+  const marker = new window.mapboxgl.Marker({ element: el, anchor: 'bottom' })
+    .setLngLat(lngLat)
+    .addTo(state.map);
+  state.footprintMarkers.push(marker);
+}
+
+// 기록 중 현장 사진 촬영/추가 → 즉시 지도 반영
+async function handleLivePhotoCapture(files) {
+  const lngLat = getCurrentLngLat();
+  if (!lngLat) {
+    showToast('현재 위치를 아직 못 잡았어요. 잠시 후 다시 시도해 주세요.');
+    return;
+  }
+  for (const file of files) {
+    try {
+      const dataUrl = await fileToDataUrl(file);
+      addLivePhotoMarker(lngLat, dataUrl);
+      if (state.activeTrip) {
+        state.activeTrip.recording.livePhotos = state.activeTrip.recording.livePhotos || [];
+        state.activeTrip.recording.livePhotos.push({
+          id: crypto.randomUUID ? crypto.randomUUID() : `live_${Math.random().toString(16).slice(2)}`,
+          dataUrl,
+          lng: lngLat[0],
+          lat: lngLat[1],
+          takenAt: new Date().toISOString(),
+        });
+        upsertSavedTrip(state.activeTrip);
+      }
+    } catch (error) {
+      console.error(error);
+    }
+  }
+  showToast('현장 사진을 지도에 추가했어요 📍');
+}
+
 function handleNav(target) {
   if (target === 'back') {
     const previous = state.previousScreen || 'create';
@@ -1697,13 +1776,22 @@ function bootstrap() {
 
   elements.createForm.addEventListener('submit', (event) => {
     event.preventDefault();
-    createTrip();
+    startRealtimeTrip();
   });
-  elements.createTripButton.addEventListener('click', createTrip);
+  elements.createTripButton.addEventListener('click', startRealtimeTrip);
+  elements.createUploadButton?.addEventListener('click', startUploadTrip);
   elements.createDiaryButton?.addEventListener('click', () => handleNav('diary'));
   elements.createPhotoImportButton?.addEventListener('click', () => {
     elements.photoInput.value = '';
     elements.photoInput.click();
+  });
+  elements.livePhotoButton?.addEventListener('click', () => {
+    elements.livePhotoInput.value = '';
+    elements.livePhotoInput.click();
+  });
+  elements.livePhotoInput?.addEventListener('change', async () => {
+    const files = Array.from(elements.livePhotoInput.files || []).filter((file) => file.type.startsWith('image/'));
+    if (files.length) await handleLivePhotoCapture(files);
   });
   elements.tripTitle.addEventListener('input', saveCreateFormState);
   elements.tripDate.addEventListener('input', saveCreateFormState);
