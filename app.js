@@ -383,6 +383,16 @@ function renderCalendar() {
 }
 
 function normalizeSavedTrip(trip) {
+  const acceptedPhotoIds = Array.isArray(trip.feedback?.acceptedPhotoIds)
+    ? trip.feedback.acceptedPhotoIds
+    : Array.isArray(trip.feedback?.accepted_photo_ids)
+      ? trip.feedback.accepted_photo_ids
+      : [];
+  const rejectedPhotoIds = Array.isArray(trip.feedback?.rejectedPhotoIds)
+    ? trip.feedback.rejectedPhotoIds
+    : Array.isArray(trip.feedback?.rejected_photo_ids)
+      ? trip.feedback.rejected_photo_ids
+      : [];
   return {
     id: trip.id,
     title: trip.title || '새 여행',
@@ -400,6 +410,10 @@ function normalizeSavedTrip(trip) {
     },
     diary: Array.isArray(trip.diary) ? trip.diary : [],
     photos: Array.isArray(trip.photos) ? trip.photos : [],
+    feedback: {
+      acceptedPhotoIds: acceptedPhotoIds.map(String),
+      rejectedPhotoIds: rejectedPhotoIds.map(String),
+    },
   };
 }
 
@@ -521,6 +535,14 @@ function createTripRecord(trip) {
     },
     diary: trip.diary ?? [],
     photos: trip.photos ?? [],
+    feedback: {
+      acceptedPhotoIds: Array.isArray(trip.feedback?.acceptedPhotoIds)
+        ? trip.feedback.acceptedPhotoIds.map(String)
+        : [],
+      rejectedPhotoIds: Array.isArray(trip.feedback?.rejectedPhotoIds)
+        ? trip.feedback.rejectedPhotoIds.map(String)
+        : [],
+    },
     status: trip.status ?? 'draft',
   };
 }
@@ -564,6 +586,8 @@ function syncSelectedTripView() {
     };
     state.generatedDiary = null;
     state.diaryUnlocked = false;
+    state.acceptedPhotoIds = new Set();
+    state.rejectedPhotoIds = new Set();
     updateTripTexts();
     renderTripHistory();
     renderTimeline(state.sampleTimeline);
@@ -585,6 +609,8 @@ function syncSelectedTripView() {
   state.generatedDiary = trip.diary && trip.diary.length ? trip.diary : null;
   state.diaryUnlocked = Boolean(state.generatedDiary);
   state.locationSamples = trip.recording?.samples ?? [];
+  state.acceptedPhotoIds = new Set((trip.feedback?.acceptedPhotoIds || []).map(String));
+  state.rejectedPhotoIds = new Set((trip.feedback?.rejectedPhotoIds || []).map(String));
   updateTripTexts();
   renderTripHistory();
   renderTimeline(state.generatedDiary || state.sampleTimeline);
@@ -2018,7 +2044,60 @@ async function generateDiaryFromPhotoData(parsed) {
   showToast('오늘의 여정이 다이어리로 정리되었습니다.');
 }
 
+function getEntryFeedbackIds(entry) {
+  return [
+    ...(Array.isArray(entry?.photoIds) ? entry.photoIds : []),
+    entry?.photoId,
+  ]
+    .filter((id) => id !== undefined && id !== null && id !== '')
+    .map(String);
+}
+
+function syncDiaryDeletion(nextEntries, removedEntry) {
+  const nextDiary = nextEntries.slice();
+  getEntryFeedbackIds(removedEntry).forEach((photoId) => {
+    state.acceptedPhotoIds.delete(photoId);
+    state.rejectedPhotoIds.delete(photoId);
+  });
+
+  state.generatedDiary = nextDiary.length ? nextDiary : null;
+  state.diaryUnlocked = nextDiary.length > 0;
+
+  const feedback = {
+    acceptedPhotoIds: Array.from(state.acceptedPhotoIds).map(String),
+    rejectedPhotoIds: Array.from(state.rejectedPhotoIds).map(String),
+  };
+  const selectedTrip = getSelectedTrip({ fallback: false });
+  const touched = new Set();
+  [selectedTrip, state.activeTrip].forEach((trip) => {
+    if (!trip || touched.has(trip.id)) return;
+    trip.diary = nextDiary;
+    trip.feedback = feedback;
+    if (!nextDiary.length && trip.status === 'completed') {
+      trip.status = 'recorded';
+    }
+    upsertSavedTrip(trip);
+    touched.add(trip.id);
+  });
+
+  const mapTrip = state.activeTrip || selectedTrip;
+  if (mapTrip && state.map) {
+    renderTripOnMap(mapTrip);
+  }
+  return nextDiary;
+}
+
+function deleteDiaryEntry(index, entries) {
+  if (!Array.isArray(entries) || entries === state.sampleTimeline) return null;
+  const source = Array.isArray(state.generatedDiary) ? state.generatedDiary : entries;
+  if (!source[index]) return null;
+  const nextEntries = source.slice();
+  const [removedEntry] = nextEntries.splice(index, 1);
+  return syncDiaryDeletion(nextEntries, removedEntry);
+}
+
 function renderTimeline(entries = state.generatedDiary || state.sampleTimeline) {
+  const isSampleTimeline = entries === state.sampleTimeline;
   elements.timeline.innerHTML = entries
     .map((entry, index) => {
       const photoUrls = Array.isArray(entry.photoUrls) ? entry.photoUrls.slice(0, 3) : [];
@@ -2030,13 +2109,20 @@ function renderTimeline(entries = state.generatedDiary || state.sampleTimeline) 
       const gallery = photoUrls.length
         ? `
           <div class="timeline-gallery timeline-gallery--${photoUrls.length}">
-            ${photoUrls.map((url, photoIndex) => `
-              <div class="timeline-photo-wrap">
+            ${photoUrls.map((url, photoIndex) => {
+              const photoId = String(entry.photoIds?.[photoIndex] || entry.photoId || index);
+              const approved = state.acceptedPhotoIds.has(photoId);
+              const rejected = state.rejectedPhotoIds.has(photoId);
+              const approveClass = approved ? ' is-sent is-sent-approve' : '';
+              const rejectClass = rejected ? ' is-sent is-sent-reject' : '';
+              const wrapClass = approved ? ' is-feedback-approved' : rejected ? ' is-feedback-rejected' : '';
+              return `
+              <div class="timeline-photo-wrap${wrapClass}" data-feedback-wrap="${escapeHtml(photoId)}">
                 <img class="timeline-thumb" src="${escapeHtml(url)}" alt="${place} 사진 ${photoIndex + 1}" />
-                <button class="photo-feedback-button photo-feedback-button--approve" type="button" data-feedback-photo="${entry.photoIds?.[photoIndex] || entry.photoId || index}" data-feedback-kind="approve" aria-label="이 사진 좋아요">👍</button>
-                <button class="photo-feedback-button photo-feedback-button--reject" type="button" data-feedback-photo="${entry.photoIds?.[photoIndex] || entry.photoId || index}" data-feedback-kind="reject" aria-label="이 사진 별로예요">👎</button>
+                <button class="photo-feedback-button photo-feedback-button--approve${approveClass}" type="button" data-feedback-photo="${escapeHtml(photoId)}" data-feedback-kind="approve" aria-pressed="${approved ? 'true' : 'false'}" aria-label="이 사진 좋아요">👍</button>
+                <button class="photo-feedback-button photo-feedback-button--reject${rejectClass}" type="button" data-feedback-photo="${escapeHtml(photoId)}" data-feedback-kind="reject" aria-pressed="${rejected ? 'true' : 'false'}" aria-label="이 사진 별로예요">👎</button>
               </div>
-            `).join('')}
+            `; }).join('')}
           </div>
         `
         : '';
@@ -2054,7 +2140,7 @@ function renderTimeline(entries = state.generatedDiary || state.sampleTimeline) 
               <div class="timeline-actions-group">
                 <button class="timeline-button" type="button" data-view-map="${index}">지도에서 보기</button>
                 <button class="timeline-button timeline-button--edit" type="button" data-edit-note="${index}">수정</button>
-                <button class="timeline-button timeline-button--danger" type="button" data-delete-entry="${index}">삭제</button>
+                ${isSampleTimeline ? '' : `<button class="timeline-button timeline-button--danger" type="button" data-delete-entry="${index}">삭제</button>`}
               </div>
             </div>
             <h3 class="timeline-place">${place}</h3>
@@ -2125,15 +2211,9 @@ function renderTimeline(entries = state.generatedDiary || state.sampleTimeline) 
       const placeName = (entry.place || '이 기록').split(',')[0];
       if (!window.confirm(`'${placeName}' 기록을 삭제하시겠습니까?`)) return;
 
-      entries.splice(index, 1);
-      state.generatedDiary = entries.length ? entries : null;
-      state.diaryUnlocked = Boolean(state.generatedDiary);
-      if (state.activeTrip) {
-        state.activeTrip.diary = entries.slice();
-        upsertSavedTrip(state.activeTrip);
-        renderTripOnMap(state.activeTrip);
-      }
-      renderTimeline(entries.length ? entries : state.sampleTimeline);
+      const nextEntries = deleteDiaryEntry(index, entries);
+      if (!nextEntries) return;
+      renderTimeline(nextEntries.length ? nextEntries : state.sampleTimeline);
       updateNavButtons();
       showToast('기록을 삭제했어요.');
     });
@@ -2235,6 +2315,10 @@ function createTrip() {
     },
     diary: [],
     photos: [],
+    feedback: {
+      acceptedPhotoIds: [],
+      rejectedPhotoIds: [],
+    },
   };
   state.activeTripId = trip.id;
   state.activeTrip = trip;
@@ -2311,6 +2395,10 @@ function createDraftTripFromCurrentFields() {
     },
     diary: [],
     photos: [],
+    feedback: {
+      acceptedPhotoIds: [],
+      rejectedPhotoIds: [],
+    },
   };
   state.savedTrips.unshift(trip);
   state.savedTrips = dedupeTripsByDate(state.savedTrips);
@@ -2511,6 +2599,7 @@ async function submitPhotoFeedback(photoId, kind = 'reject') {
     state.rejectedPhotoIds.add(photoId);
     state.acceptedPhotoIds.delete(photoId);
   }
+  persistPhotoFeedbackLocally();
   if (!state.tripId) return;
   const rejected_photo_ids = Array.from(state.rejectedPhotoIds);
   const accepted_photo_ids = Array.from(state.acceptedPhotoIds);
@@ -2532,6 +2621,22 @@ async function submitPhotoFeedback(photoId, kind = 'reject') {
   return response.json();
 }
 
+function persistPhotoFeedbackLocally() {
+  const feedback = {
+    acceptedPhotoIds: Array.from(state.acceptedPhotoIds).map(String),
+    rejectedPhotoIds: Array.from(state.rejectedPhotoIds).map(String),
+  };
+  const selectedTrip = getSelectedTrip({ fallback: false });
+  if (selectedTrip) {
+    selectedTrip.feedback = feedback;
+    upsertSavedTrip(selectedTrip);
+  }
+  if (state.activeTrip) {
+    state.activeTrip.feedback = feedback;
+    upsertSavedTrip(state.activeTrip);
+  }
+}
+
 function persistDiaryNoteLocally(entryIndex, note, entries) {
   if (Array.isArray(entries) && entries[entryIndex]) {
     entries[entryIndex].note = note;
@@ -2540,7 +2645,7 @@ function persistDiaryNoteLocally(entryIndex, note, entries) {
     state.generatedDiary[entryIndex].note = note;
   }
 
-  const selectedTrip = getSelectedTrip();
+  const selectedTrip = getSelectedTrip({ fallback: false });
   if (selectedTrip?.diary?.[entryIndex]) {
     selectedTrip.diary[entryIndex].note = note;
     upsertSavedTrip(selectedTrip);
@@ -2710,7 +2815,10 @@ function bootstrap() {
     if (wrap) {
       wrap.querySelectorAll('.photo-feedback-button').forEach((b) => {
         if (b !== button) b.classList.remove('is-sent', 'is-sent-approve', 'is-sent-reject');
+        if (b !== button) b.setAttribute('aria-pressed', 'false');
       });
+      wrap.classList.remove('is-feedback-approved', 'is-feedback-rejected');
+      wrap.classList.add(kind === 'approve' ? 'is-feedback-approved' : 'is-feedback-rejected');
       const burst = document.createElement('span');
       burst.className = 'feedback-burst';
       burst.textContent = kind === 'approve' ? '👍' : '👎';
@@ -2720,6 +2828,7 @@ function bootstrap() {
     // reflow 후 클래스 부여 (연속 클릭에도 팝 애니메이션 재생)
     void button.offsetWidth;
     button.classList.add('is-sent', kind === 'approve' ? 'is-sent-approve' : 'is-sent-reject');
+    button.setAttribute('aria-pressed', 'true');
 
     // ② 저장은 백그라운드: 로컬 상태는 항상 반영, 서버 전송 실패는 조용히 넘어감
     try {
@@ -2885,6 +2994,14 @@ function drawRoundedRect(ctx, x, y, w, h, r) {
   ctx.closePath();
 }
 
+function drawCoverImage(ctx, img, x, y, w, h, zoom = 1) {
+  if (!img) return;
+  const ratio = Math.max(w / img.width, h / img.height) * zoom;
+  const iw = img.width * ratio;
+  const ih = img.height * ratio;
+  ctx.drawImage(img, x + (w - iw) / 2, y + (h - ih) / 2, iw, ih);
+}
+
 // ---------- 이징 ----------
 function easeOutBack(t) {
   const c1 = 1.70158; const c3 = c1 + 1;
@@ -2902,31 +3019,132 @@ function seededRand(seed) {
   };
 }
 
-// ---------- 배경음악: WebAudio 로 직접 합성한 로파이 루프 (저작권 프리) ----------
-function buildMemoryTrack(audioCtx, destination, totalSec) {
+function getMemoryText(entries) {
+  return [
+    state.trip.title,
+    state.trip.region,
+    ...entries.map((entry) => `${entry.place || ''} ${entry.note || ''}`),
+  ].join(' ').toLowerCase();
+}
+
+function pickMusicProfile(entries) {
+  const text = getMemoryText(entries);
+  if (/일본|도쿄|교토|오사카|후쿠오카|삿포로|okinawa|japan|tokyo|kyoto|osaka|fukuoka|sapporo/.test(text)) {
+    return {
+      name: '동아시아 여행 무드',
+      master: 0.68,
+      barDur: 2.45,
+      chords: [
+        [293.66, 369.99, 440.0, 587.33],
+        [246.94, 329.63, 392.0, 493.88],
+        [220.0, 293.66, 369.99, 440.0],
+        [261.63, 329.63, 392.0, 523.25],
+      ],
+      melody: [0, 2, 4, 2, 1, 2, 4, 5],
+      scale: [293.66, 329.63, 369.99, 440.0, 493.88, 587.33],
+      padType: 'triangle',
+      leadType: 'sine',
+      texture: 'bell',
+    };
+  }
+  if (/바다|해변|섬|제주|오키나와|하와이|발리|푸켓|코타키나발루|beach|island|bali|hawaii|phuket|sea|ocean/.test(text)) {
+    return {
+      name: '바다 여행 무드',
+      master: 0.7,
+      barDur: 2.65,
+      chords: [
+        [246.94, 329.63, 415.3, 554.37],
+        [277.18, 349.23, 440.0, 554.37],
+        [220.0, 277.18, 369.99, 440.0],
+        [207.65, 311.13, 392.0, 493.88],
+      ],
+      melody: [0, 3, 4, 6, 4, 3, 1, 3],
+      scale: [246.94, 277.18, 329.63, 369.99, 415.3, 493.88, 554.37],
+      padType: 'sine',
+      leadType: 'triangle',
+      texture: 'wave',
+    };
+  }
+  if (/프랑스|파리|이탈리아|로마|스페인|바르셀로나|런던|유럽|paris|france|italy|rome|spain|barcelona|london|europe/.test(text)) {
+    return {
+      name: '유럽 산책 무드',
+      master: 0.64,
+      barDur: 2.85,
+      chords: [
+        [261.63, 329.63, 392.0, 523.25],
+        [196.0, 246.94, 329.63, 392.0],
+        [220.0, 261.63, 349.23, 440.0],
+        [174.61, 261.63, 329.63, 392.0],
+      ],
+      melody: [2, 4, 5, 7, 5, 4, 2, 1],
+      scale: [196.0, 220.0, 261.63, 293.66, 329.63, 392.0, 440.0, 523.25],
+      padType: 'triangle',
+      leadType: 'sine',
+      texture: 'waltz',
+    };
+  }
+  if (/밤|야경|시티|도시|서울|홍콩|뉴욕|night|city|seoul|hong kong|new york|nyc/.test(text)) {
+    return {
+      name: '도시 야경 무드',
+      master: 0.66,
+      barDur: 2.35,
+      chords: [
+        [220.0, 277.18, 329.63, 440.0],
+        [196.0, 246.94, 293.66, 392.0],
+        [174.61, 220.0, 261.63, 349.23],
+        [207.65, 261.63, 311.13, 415.3],
+      ],
+      melody: [0, 2, 4, 6, 4, 2, 1, 2],
+      scale: [174.61, 196.0, 220.0, 261.63, 293.66, 329.63, 392.0],
+      padType: 'sawtooth',
+      leadType: 'sine',
+      texture: 'pulse',
+    };
+  }
+  return {
+    name: '따뜻한 여행 무드',
+    master: 0.66,
+    barDur: 2.75,
+    chords: [
+      [261.63, 329.63, 392.0, 493.88],
+      [220.0, 261.63, 329.63, 392.0],
+      [174.61, 220.0, 261.63, 329.63],
+      [196.0, 246.94, 293.66, 349.23],
+    ],
+    melody: [0, 2, 4, 2, 3, 5, 4, 2],
+    scale: [196.0, 220.0, 246.94, 261.63, 293.66, 329.63, 392.0],
+    padType: 'triangle',
+    leadType: 'sine',
+    texture: 'lofi',
+  };
+}
+
+// ---------- 배경음악: WebAudio 로 직접 합성한 저작권 프리 여행 무드 ----------
+function buildMemoryTrack(audioCtx, destination, totalSec, profile = pickMusicProfile([])) {
   const master = audioCtx.createGain();
   master.gain.value = 0.0001;
+  const compressor = audioCtx.createDynamicsCompressor();
+  compressor.threshold.value = -18;
+  compressor.knee.value = 18;
+  compressor.ratio.value = 3;
+  compressor.attack.value = 0.01;
+  compressor.release.value = 0.18;
   const warm = audioCtx.createBiquadFilter();
   warm.type = 'lowpass';
-  warm.frequency.value = 1500;
-  master.connect(warm);
+  warm.frequency.value = profile.texture === 'pulse' ? 2100 : 1700;
+  master.connect(compressor);
+  compressor.connect(warm);
   warm.connect(destination);
 
   const t0 = audioCtx.currentTime + 0.05;
   // 페이드 인/아웃
   master.gain.setValueAtTime(0.0001, t0);
-  master.gain.exponentialRampToValueAtTime(0.55, t0 + 1.2);
-  master.gain.setValueAtTime(0.55, t0 + Math.max(1.3, totalSec - 1.6));
+  master.gain.exponentialRampToValueAtTime(profile.master, t0 + 0.8);
+  master.gain.setValueAtTime(profile.master, t0 + Math.max(1.3, totalSec - 1.4));
   master.gain.exponentialRampToValueAtTime(0.0001, t0 + totalSec);
 
-  // 코드 진행: Cmaj7 → Am7 → Fmaj7 → G7 (부드러운 여행 무드)
-  const chords = [
-    [261.63, 329.63, 392.0, 493.88],
-    [220.0, 261.63, 329.63, 392.0],
-    [174.61, 220.0, 261.63, 329.63],
-    [196.0, 246.94, 293.66, 349.23],
-  ];
-  const barDur = 2.75; // ≈87bpm 4/4
+  const { chords, scale, melody } = profile;
+  const barDur = profile.barDur;
   const bars = Math.ceil(totalSec / barDur) + 1;
 
   for (let bar = 0; bar < bars; bar += 1) {
@@ -2936,7 +3154,7 @@ function buildMemoryTrack(audioCtx, destination, totalSec) {
     // 패드 (따뜻한 삼각파, 느린 어택)
     chord.forEach((freq, vi) => {
       const osc = audioCtx.createOscillator();
-      osc.type = 'triangle';
+      osc.type = profile.padType;
       osc.frequency.value = freq;
       const g = audioCtx.createGain();
       g.gain.setValueAtTime(0.0001, barStart);
@@ -2951,16 +3169,16 @@ function buildMemoryTrack(audioCtx, destination, totalSec) {
     for (let step = 0; step < 8; step += 1) {
       if (step % 4 === 3) continue; // 살짝 쉼표로 여유
       const noteStart = barStart + (step * barDur) / 8;
-      const freq = chord[step % chord.length] * 2;
+      const freq = scale[melody[(bar * 3 + step) % melody.length] % scale.length] * (step > 4 ? 1.5 : 1);
       const osc = audioCtx.createOscillator();
-      osc.type = 'sine';
+      osc.type = profile.leadType;
       osc.frequency.value = freq;
       const g = audioCtx.createGain();
       g.gain.setValueAtTime(0.0001, noteStart);
-      g.gain.exponentialRampToValueAtTime(0.05, noteStart + 0.015);
-      g.gain.exponentialRampToValueAtTime(0.0001, noteStart + 0.4);
+      g.gain.exponentialRampToValueAtTime(profile.texture === 'bell' ? 0.075 : 0.055, noteStart + 0.012);
+      g.gain.exponentialRampToValueAtTime(0.0001, noteStart + (profile.texture === 'waltz' ? 0.55 : 0.36));
       osc.connect(g); g.connect(master);
-      osc.start(noteStart); osc.stop(noteStart + 0.5);
+      osc.start(noteStart); osc.stop(noteStart + 0.65);
     }
 
     // 소프트 킥 (바 시작, 낮게 툭)
@@ -2973,19 +3191,40 @@ function buildMemoryTrack(audioCtx, destination, totalSec) {
     kg.gain.exponentialRampToValueAtTime(0.0001, barStart + 0.22);
     kick.connect(kg); kg.connect(master);
     kick.start(barStart); kick.stop(barStart + 0.3);
+
+    if (profile.texture === 'wave' || profile.texture === 'pulse') {
+      for (let step = 2; step < 8; step += 4) {
+        const hitStart = barStart + (step * barDur) / 8;
+        const hat = audioCtx.createBufferSource();
+        const buf = audioCtx.createBuffer(1, Math.floor(audioCtx.sampleRate * 0.12), audioCtx.sampleRate);
+        const data = buf.getChannelData(0);
+        for (let i = 0; i < data.length; i += 1) data[i] = (Math.random() * 2 - 1) * (1 - i / data.length);
+        hat.buffer = buf;
+        const hf = audioCtx.createBiquadFilter();
+        hf.type = 'highpass'; hf.frequency.value = profile.texture === 'pulse' ? 5200 : 2600;
+        const hg = audioCtx.createGain();
+        hg.gain.setValueAtTime(profile.texture === 'pulse' ? 0.045 : 0.03, hitStart);
+        hg.gain.exponentialRampToValueAtTime(0.0001, hitStart + 0.12);
+        hat.connect(hf); hf.connect(hg); hg.connect(master);
+        hat.start(hitStart); hat.stop(hitStart + 0.14);
+      }
+    }
   }
 
-  // 비닐 노이즈 (아주 작게, 질감)
+  // 질감: 비닐/바람/공기 노이즈를 아주 작게 깔아 무음처럼 느껴지지 않게 한다.
   const noiseBuf = audioCtx.createBuffer(1, audioCtx.sampleRate * 2, audioCtx.sampleRate);
   const nd = noiseBuf.getChannelData(0);
   for (let i = 0; i < nd.length; i += 1) nd[i] = (Math.random() * 2 - 1) * 0.5;
   const noise = audioCtx.createBufferSource();
   noise.buffer = noiseBuf; noise.loop = true;
   const nf = audioCtx.createBiquadFilter();
-  nf.type = 'lowpass'; nf.frequency.value = 900;
-  const ng = audioCtx.createGain(); ng.gain.value = 0.012;
+  nf.type = profile.texture === 'wave' ? 'bandpass' : 'lowpass';
+  nf.frequency.value = profile.texture === 'wave' ? 700 : 900;
+  const ng = audioCtx.createGain(); ng.gain.value = profile.texture === 'wave' ? 0.02 : 0.012;
   noise.connect(nf); nf.connect(ng); ng.connect(master);
   noise.start(t0); noise.stop(t0 + totalSec);
+
+  return profile;
 }
 
 // ---------- 지구본 씬 ----------
@@ -3173,13 +3412,21 @@ async function createMemoryVideo() {
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     await audioCtx.resume();
     const audioDest = audioCtx.createMediaStreamDestination();
-    buildMemoryTrack(audioCtx, audioDest, total / 1000 + 0.3);
+    const musicProfile = pickMusicProfile(entries);
+    buildMemoryTrack(audioCtx, audioDest, total / 1000 + 0.3, musicProfile);
+    const audioTracks = audioDest.stream.getAudioTracks();
+    if (!audioTracks.length) {
+      console.warn('memory video audio track was not created');
+    }
     const mixed = new MediaStream([
       ...videoStream.getVideoTracks(),
-      ...audioDest.stream.getAudioTracks(),
+      ...audioTracks,
     ]);
 
-    const recorderOptions = { videoBitsPerSecond: 6_000_000 };
+    const recorderOptions = {
+      videoBitsPerSecond: 8_000_000,
+      audioBitsPerSecond: 192_000,
+    };
     if (format.mime) recorderOptions.mimeType = format.mime;
     const recorder = new MediaRecorder(mixed, recorderOptions);
     const chunks = [];
@@ -3246,12 +3493,25 @@ async function createMemoryVideo() {
       ctx.restore();
     };
 
-    const drawMapScene = (walkT, extra) => {
+    const drawMapScene = (walkT, extra, moodImage = null) => {
       const grad = ctx.createLinearGradient(0, 0, 0, H);
       grad.addColorStop(0, '#fdf6ee');
       grad.addColorStop(1, '#f3e2d0');
       ctx.fillStyle = grad;
       ctx.fillRect(0, 0, W, H);
+      if (moodImage) {
+        ctx.save();
+        ctx.globalAlpha = 0.24;
+        ctx.filter = 'blur(18px) saturate(1.18)';
+        drawCoverImage(ctx, moodImage, -36, -36, W + 72, H + 72, 1.08);
+        ctx.restore();
+        const veil = ctx.createLinearGradient(0, 0, 0, H);
+        veil.addColorStop(0, 'rgba(253,246,238,0.78)');
+        veil.addColorStop(0.42, 'rgba(253,246,238,0.56)');
+        veil.addColorStop(1, 'rgba(243,226,208,0.82)');
+        ctx.fillStyle = veil;
+        ctx.fillRect(0, 0, W, H);
+      }
 
       ctx.fillStyle = '#43312c'; ctx.textAlign = 'center';
       ctx.font = '700 42px Georgia, serif';
@@ -3316,15 +3576,15 @@ async function createMemoryVideo() {
       if (seg.type === 'fly') {
         drawMapScene(walkT, () => {
           drawPolaroid(seg.idx, easeOutBack(p), Math.min(1, p * 2), 0);
-        });
+        }, images[seg.idx]);
       } else if (seg.type === 'hold') {
         drawMapScene(walkT, () => {
           drawPolaroid(seg.idx, 1, 1, p);
-        });
+        }, images[seg.idx]);
       } else if (seg.type === 'tuck') {
         drawMapScene(walkT, () => {
           drawPolaroid(seg.idx, 1 - easeInOutQuad(p) * 0.9, 1 - p, 1);
-        });
+        }, images[seg.idx]);
       } else if (seg.type === 'outro') {
         drawMapScene(1, () => {
           // 폴라로이드 콜라주 부채꼴
@@ -3365,6 +3625,9 @@ async function createMemoryVideo() {
             ctx.font = '500 24px "Noto Sans KR", sans-serif';
             ctx.fillStyle = '#8a7364';
             ctx.fillText(`${entries.length}곳의 기억 · Travel Diary`, W / 2, 762);
+            ctx.font = '500 20px "Noto Sans KR", sans-serif';
+            ctx.fillStyle = '#a28b7d';
+            ctx.fillText(`${musicProfile.name} · 배경음악 포함`, W / 2, 798);
             ctx.globalAlpha = 1;
           }
         });
@@ -3398,10 +3661,10 @@ async function createMemoryVideo() {
     const fileName = `travel-diary-${state.trip.date || 'memory'}.${ext}`;
     const saveResult = await saveMemoryVideo(blob, fileName, recordedMime);
     const formatLabel = getVideoLabel(recordedMime);
-    if (saveResult === 'saved') showToast(`${formatLabel} 영상이 선택한 위치에 저장됐어요 🎬`);
-    else if (saveResult === 'shared') showToast(`${formatLabel} 영상을 공유창으로 보냈어요 🎬`);
+    if (saveResult === 'saved') showToast(`${formatLabel} 영상이 음악과 함께 저장됐어요 🎬`);
+    else if (saveResult === 'shared') showToast(`${formatLabel} 영상을 음악과 함께 공유창으로 보냈어요 🎬`);
     else if (saveResult === 'cancelled') showToast('영상 저장을 취소했어요.');
-    else showToast(`${formatLabel} 영상을 다운로드했어요 🎬`);
+    else showToast(`${formatLabel} 영상을 음악과 함께 다운로드했어요 🎬`);
   } catch (error) {
     console.error(error);
     showToast('영상 만들기에 실패했어요.');

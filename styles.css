@@ -778,7 +778,13 @@ textarea:focus-visible {
   color: #4f806a;
 }
 
-.timeline-photo-wrap.is-feedback-sent {
+.timeline-photo-wrap.is-feedback-approved {
+  outline: 2px solid rgba(47, 158, 95, 0.42);
+  outline-offset: 2px;
+  border-radius: 16px;
+}
+
+.timeline-photo-wrap.is-feedback-rejected {
   opacity: 0.72;
   filter: saturate(0.92);
 }
