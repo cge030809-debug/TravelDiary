@@ -6,9 +6,11 @@ const PHOTO_SPOT_MIN_COUNT = 3;
 const PHOTO_SPOT_GAP_MS = 10 * 60 * 1000;
 const FOOTPRINT_MIN_DISTANCE_M = 12;
 const FOOTPRINT_MIN_GAP_MS = 8000;
+const CREATE_FORM_STORAGE_KEY = 'travel-diary:create-form';
 
 const state = {
   screen: 'create',
+  previousScreen: null,
   mapState: 'before',
   diaryUnlocked: false,
   tripId: null,
@@ -371,6 +373,9 @@ function initMapIfNeeded() {
 }
 
 function setScreen(screen) {
+  if (state.screen !== screen) {
+    state.previousScreen = state.screen;
+  }
   state.screen = screen;
   elements.createScreen.hidden = screen !== 'create';
   elements.mapScreen.hidden = screen !== 'map';
@@ -634,6 +639,7 @@ async function generateDiaryFromFiles(files) {
 
   cleanupGeneratedPhotoUrls();
   state.photoUrls = photoData.map((photo) => photo.url);
+  syncTripDateFromPhotos(photoData);
 
   photoData.sort((a, b) => a.takenAt - b.takenAt);
   const photoById = new Map(photoData.map((photo) => [photo.id, photo]));
@@ -733,9 +739,52 @@ function renderTimeline(entries = state.generatedDiary || state.sampleTimeline) 
 }
 
 function syncCreateFields() {
-  elements.tripTitle.value = state.trip.title;
-  elements.tripDate.value = state.trip.date;
-  elements.tripRegion.value = state.trip.region;
+  const stored = loadCreateFormState();
+  elements.tripTitle.value = stored.title || state.trip.title;
+  elements.tripDate.value = stored.date || state.trip.date;
+  elements.tripRegion.value = stored.region || state.trip.region;
+}
+
+function saveCreateFormState() {
+  if (!window.localStorage) return;
+  const payload = {
+    title: elements.tripTitle?.value || '',
+    date: elements.tripDate?.value || '',
+    region: elements.tripRegion?.value || '',
+  };
+  window.localStorage.setItem(CREATE_FORM_STORAGE_KEY, JSON.stringify(payload));
+}
+
+function loadCreateFormState() {
+  if (!window.localStorage) return {};
+  try {
+    const raw = window.localStorage.getItem(CREATE_FORM_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+function formatLocalDate(date) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) return '';
+  return date.toISOString().slice(0, 10);
+}
+
+function syncTripDateFromPhotos(photoData) {
+  const photoDates = photoData
+    .map((photo) => photo.takenAt)
+    .filter((date) => date instanceof Date && !Number.isNaN(date.getTime()));
+  if (!photoDates.length) return false;
+
+  const earliest = new Date(Math.min(...photoDates.map((date) => date.getTime())));
+  const photoDate = formatLocalDate(earliest);
+  if (!photoDate || photoDate === state.trip.date) return false;
+
+  state.trip.date = photoDate;
+  elements.tripDate.value = photoDate;
+  saveCreateFormState();
+  updateTripTexts();
+  return true;
 }
 
 function createTrip() {
@@ -799,6 +848,14 @@ function createTrip() {
 }
 
 function handleNav(target) {
+  if (target === 'back') {
+    const previous = state.previousScreen || 'create';
+    setScreen(previous);
+    if (previous === 'map') {
+      setMapState(state.mapState);
+    }
+    return;
+  }
   if (target === 'diary' && !state.diaryUnlocked) return;
   setScreen(target);
   if (target === 'map') {
@@ -892,6 +949,9 @@ function bootstrap() {
     createTrip();
   });
   elements.createTripButton.addEventListener('click', createTrip);
+  elements.tripTitle.addEventListener('input', saveCreateFormState);
+  elements.tripDate.addEventListener('input', saveCreateFormState);
+  elements.tripRegion.addEventListener('input', saveCreateFormState);
   elements.startRecording.addEventListener('click', startRecording);
   elements.endRecording.addEventListener('click', endRecording);
   elements.photoImportButton.addEventListener('click', () => {

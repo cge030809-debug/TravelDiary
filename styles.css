@@ -227,6 +227,13 @@ input::placeholder {
   transform: none;
 }
 
+.segment-button--back {
+  background: rgba(255, 255, 255, 0.55);
+  color: #6d4d3f;
+  width: 36px;
+  padding-inline: 0;
+}
+
 .trip-chip {
   width: fit-content;
   max-width: 100%;
