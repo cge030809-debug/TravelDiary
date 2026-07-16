@@ -328,25 +328,26 @@ def list_trips_with_diaries() -> list[dict]:
             "trips",
             params={
                 "select": "trip_id,meta_json,diary_json",
-                "diary_json": "not.is.null",
                 "order": "created_at.desc",
             },
         ) or []
-        return [
-            {
-                "trip_id": row["trip_id"],
-                "meta": row.get("meta_json") or {},
-                "diary": _load_diary(row["diary_json"]),
-            }
-            for row in rows
-        ]
+        trips = []
+        for row in rows:
+            diary_json = row.get("diary_json")
+            trips.append(
+                {
+                    "trip_id": row["trip_id"],
+                    "meta": row.get("meta_json") or {},
+                    "diary": _load_diary(diary_json) if diary_json is not None else None,
+                }
+            )
+        return trips
 
     with _connect() as conn:
         rows = conn.execute(
             """
             SELECT trip_id, meta_json, diary_json
             FROM trips
-            WHERE diary_json IS NOT NULL
             ORDER BY rowid DESC
             """
         ).fetchall()
@@ -357,7 +358,7 @@ def list_trips_with_diaries() -> list[dict]:
             {
                 "trip_id": row["trip_id"],
                 "meta": json.loads(row["meta_json"]) if row["meta_json"] else {},
-                "diary": _load_diary(row["diary_json"]),
+                "diary": _load_diary(row["diary_json"]) if row["diary_json"] is not None else None,
             }
         )
     return trips
@@ -413,20 +414,36 @@ def get_photo_feedback(trip_id: str) -> Optional[PhotoFeedback]:
 
 def get_latest_trip_id() -> Optional[str]:
     if _using_supabase():
-        row = _supabase_one(
+        rows = _supabase_request(
+            "GET",
             "trips",
-            {
+            params={
                 "select": "trip_id",
-                "diary_json": "not.is.null",
                 "order": "created_at.desc",
             },
-        )
-        return row["trip_id"] if row else None
+        ) or []
+        for row in rows:
+            trip_id = row["trip_id"]
+            if get_diary(trip_id) is not None or get_locations(trip_id) or get_photos(trip_id):
+                return trip_id
+        return None
 
     with _connect() as conn:
         row = conn.execute(
-            "SELECT trip_id FROM trips WHERE diary_json IS NOT NULL ORDER BY rowid DESC LIMIT 1"
+            """
+            SELECT t.trip_id
+            FROM trips t
+            WHERE t.diary_json IS NOT NULL
+               OR EXISTS (SELECT 1 FROM locations l WHERE l.trip_id = t.trip_id)
+               OR EXISTS (SELECT 1 FROM photos p WHERE p.trip_id = t.trip_id)
+            ORDER BY t.rowid DESC
+            LIMIT 1
+            """
         ).fetchone()
     if not row:
         return None
     return row["trip_id"]
+
+
+def storage_backend_name() -> str:
+    return "supabase" if _using_supabase() else "sqlite"

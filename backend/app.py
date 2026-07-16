@@ -49,14 +49,16 @@ def list_trips():
         diary = item["diary"]
         meta = item["meta"]
         locations = storage.get_locations(item["trip_id"])
-        first_entry_date = diary.timeline[0].time.date().isoformat() if diary.timeline else ""
+        first_entry_date = diary.timeline[0].time.date().isoformat() if diary and diary.timeline else ""
+        first_location_date = locations[0].time.date().isoformat() if locations else ""
         trips.append(
             {
                 "trip_id": item["trip_id"],
-                "title": diary.title or meta.get("title", ""),
-                "date": meta.get("start_date") or first_entry_date,
+                "title": (diary.title if diary else "") or meta.get("title", ""),
+                "date": meta.get("start_date") or first_entry_date or first_location_date,
                 "region": meta.get("region", ""),
                 "diary": diary,
+                "status": "completed" if diary is not None else "recorded",
                 "locations": _serialize_locations(locations),
             }
         )
@@ -147,6 +149,17 @@ def latest_trip():
     if trip_id is None:
         raise HTTPException(404, "저장된 여행이 없습니다.")
     return {"trip_id": trip_id}
+
+
+@app.get("/api/health")
+def health():
+    return {
+        "ok": True,
+        "storage": storage.storage_backend_name(),
+        "supabase_configured": bool(config.SUPABASE_URL and config.SUPABASE_SERVICE_ROLE_KEY),
+        "mapbox_configured": bool(config.MAPBOX_ACCESS_TOKEN),
+        "ai_configured": bool(config.AI_API_KEY),
+    }
 
 
 def _serialize_locations(points):

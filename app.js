@@ -1917,16 +1917,17 @@ function buildRecordingFromPhotoFallback(photos = []) {
 }
 
 function savedTripFromServer(item) {
-  if (!item?.trip_id || !item?.diary) return null;
+  if (!item?.trip_id) return null;
   const diary = {
-    ...item.diary,
-    title: item.title || item.diary.title || '여행 다이어리',
+    ...(item.diary || {}),
+    title: item.title || item.diary?.title || '여행 다이어리',
   };
   const entries = diaryFromApi(diary);
-  if (!entries?.length) return null;
 
   const firstTimestamp = entries.find((entry) => entry.timestamp instanceof Date && !Number.isNaN(entry.timestamp.getTime()))?.timestamp;
-  const date = normalizeDateKey(item.date || firstTimestamp || new Date());
+  const serverRecording = buildRecordingFromLocations(item.locations || []);
+  const firstSample = serverRecording.samples[0] || null;
+  const date = normalizeDateKey(item.date || firstTimestamp || (firstSample ? new Date(firstSample.timestamp) : new Date()));
   const title = item.title || diary.title || '여행 다이어리';
   const photos = entries
     .filter((entry) => Array.isArray(entry.center) && Number.isFinite(entry.center[0]) && Number.isFinite(entry.center[1]))
@@ -1939,17 +1940,17 @@ function savedTripFromServer(item) {
       lng: entry.center[0],
       lat: entry.center[1],
     }));
-  const serverRecording = buildRecordingFromLocations(item.locations || []);
   const fallbackRecording = buildRecordingFromPhotoFallback(photos);
   const recording = hasRouteRecording(serverRecording) ? serverRecording : fallbackRecording;
+  if (!entries?.length && !hasRouteRecording(recording)) return null;
 
   return {
     id: item.trip_id,
     title,
     date,
     region: item.region || '미정 지역',
-    createdAt: firstTimestamp ? firstTimestamp.toISOString() : new Date().toISOString(),
-    status: 'completed',
+    createdAt: firstTimestamp ? firstTimestamp.toISOString() : (firstSample ? new Date(firstSample.timestamp).toISOString() : new Date().toISOString()),
+    status: entries?.length ? 'completed' : (item.status || 'recorded'),
     recording,
     diary: entries,
     photos,
@@ -2009,11 +2010,12 @@ async function restoreLastTrip() {
       fetch(buildApiUrl(`/api/trips/${tripId}/photos`)),
       fetch(buildApiUrl(`/api/trips/${tripId}/locations`)),
     ]);
-    if (!diaryResponse.ok) return false;
-
-    const diary = await diaryResponse.json();
-    const restoredEntries = diaryFromApi(diary);
-    if (!restoredEntries?.length) return false;
+    let diary = null;
+    let restoredEntries = [];
+    if (diaryResponse.ok) {
+      diary = await diaryResponse.json();
+      restoredEntries = diaryFromApi(diary) || [];
+    }
 
     let restoredPhotoCount = 0;
     let restoredPhotoRecords = [];
@@ -2042,13 +2044,14 @@ async function restoreLastTrip() {
     const serverRecording = buildRecordingFromLocations(restoredLocations);
     const fallbackRecording = buildRecordingFromPhotoFallback(restoredPhotoRecords);
     const recording = hasRouteRecording(serverRecording) ? serverRecording : fallbackRecording;
+    if (!restoredEntries.length && !hasRouteRecording(recording)) return false;
     const restoredTrip = {
       id: tripId,
-      title: diary.title || state.trip.title || '여행 다이어리',
-      date: normalizeDateKey(state.trip.date || diary.timeline?.[0]?.time || new Date()),
+      title: diary?.title || state.trip.title || '여행 다이어리',
+      date: normalizeDateKey(state.trip.date || diary?.timeline?.[0]?.time || recording.startedAt || new Date()),
       region: state.trip.region || '미정 지역',
       createdAt: recording.startedAt || new Date().toISOString(),
-      status: 'completed',
+      status: restoredEntries.length ? 'completed' : 'recorded',
       recording,
       diary: restoredEntries,
       photos: restoredPhotoRecords,
@@ -2064,8 +2067,8 @@ async function restoreLastTrip() {
     state.activeTripId = tripId;
     state.activeTrip = restoredTrip;
     state.locationSamples = recording.samples;
-    state.generatedDiary = restoredEntries;
-    state.diaryUnlocked = true;
+    state.generatedDiary = restoredEntries.length ? restoredEntries : null;
+    state.diaryUnlocked = restoredEntries.length > 0;
     state.trip = {
       title: restoredTrip.title,
       date: restoredTrip.date,
@@ -2073,10 +2076,13 @@ async function restoreLastTrip() {
     };
     updateTripTexts();
     updateNavButtons();
-    renderTimeline(restoredEntries);
-    setScreen('diary');
+    renderTimeline(restoredEntries.length ? restoredEntries : state.sampleTimeline);
+    setScreen(restoredEntries.length ? 'diary' : 'map');
+    renderTripOnMap(restoredTrip);
     if (restoredPhotoCount > 0) {
       showToast(`사진 ${restoredPhotoCount}장을 다시 불러왔어요`);
+    } else if (!restoredEntries.length) {
+      showToast('저장된 이동 경로를 다시 불러왔어요.');
     }
     return true;
   } catch (error) {
