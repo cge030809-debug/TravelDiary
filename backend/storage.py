@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import Optional
 
 from . import config
-from .models import Diary, LocationPoint, Photo, TripCreate
+from .models import Diary, LocationPoint, Photo, PhotoFeedback, TripCreate
 
 # trip_id -> 데이터. 프로세스가 죽으면 사라집니다(MVP 한계).
 _trips: dict[str, dict] = {}
@@ -20,6 +20,7 @@ def create_trip(trip_id: str, trip: TripCreate) -> None:
         "locations": [],
         "photos": [],
         "diary": None,
+        "photo_feedback": None,
     }
 
 
@@ -54,3 +55,11 @@ def get_diary(trip_id: str) -> Optional[Diary]:
 
 def exists(trip_id: str) -> bool:
     return trip_id in _trips
+
+
+def save_photo_feedback(trip_id: str, feedback: PhotoFeedback) -> None:
+    _trips[trip_id]["photo_feedback"] = feedback
+
+
+def get_photo_feedback(trip_id: str) -> Optional[PhotoFeedback]:
+    return _trips.get(trip_id, {}).get("photo_feedback")

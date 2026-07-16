@@ -15,12 +15,16 @@ import uuid
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from . import config, pipeline, storage
-from .models import Diary, LocationBatch, TripCreate
+from .models import Diary, LocationBatch, PhotoFeedback, TripCreate
 from .services import exif
 
 app = FastAPI(title="Travel Diary API", version="0.1.0")
+
+app.mount("/uploads", StaticFiles(directory=config.UPLOAD_DIR), name="uploads")
+app.mount("/outputs", StaticFiles(directory=config.OUTPUT_DIR), name="outputs")
 
 # 프런트(localhost:8000 정적 서버 등)에서 호출 허용. 배포 시 도메인을 좁히세요.
 app.add_middleware(
@@ -70,6 +74,13 @@ def generate(trip_id: str):
     return pipeline.generate(trip_id)
 
 
+@app.post("/api/trips/{trip_id}/photo-feedback")
+def photo_feedback(trip_id: str, feedback: PhotoFeedback):
+    _require_trip(trip_id)
+    storage.save_photo_feedback(trip_id, feedback)
+    return {"accepted_count": len(feedback.accepted_photo_ids), "rejected_count": len(feedback.rejected_photo_ids)}
+
+
 @app.get("/api/trips/{trip_id}/diary", response_model=Diary)
 def get_diary(trip_id: str):
     _require_trip(trip_id)
@@ -82,3 +93,6 @@ def get_diary(trip_id: str):
 def _require_trip(trip_id: str) -> None:
     if not storage.exists(trip_id):
         raise HTTPException(404, "존재하지 않는 여행입니다.")
+
+
+app.mount("/", StaticFiles(directory=config.BASE_DIR, html=True), name="frontend")

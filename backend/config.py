@@ -28,7 +28,7 @@ MAPBOX_ACCESS_TOKEN = os.getenv("MAPBOX_ACCESS_TOKEN", "")
 AI_API_KEY = os.getenv("AI_API_KEY", "")
 
 # 대표사진 최대 개수
-MAX_SELECTED_PHOTOS = 8
+MAX_SELECTED_PHOTOS = 3
 
 # 필요한 폴더 보장
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)

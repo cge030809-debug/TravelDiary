@@ -1,5 +1,6 @@
-﻿const MAPBOX_ACCESS_TOKEN = window.MAPBOX_ACCESS_TOKEN || '';
+const MAPBOX_ACCESS_TOKEN = window.MAPBOX_ACCESS_TOKEN || '';
 const STORAGE_KEY = 'travel-diary.trips.v1';
+const API_BASE_URL = window.API_BASE_URL || '';
 const PHOTO_SPOT_RADIUS_M = 100;
 const PHOTO_SPOT_MIN_DURATION_MS = 10 * 60 * 1000;
 const PHOTO_SPOT_MIN_COUNT = 5;
@@ -13,6 +14,9 @@ const state = {
   screen: 'create',
   mapState: 'before',
   diaryUnlocked: false,
+  tripId: null,
+  acceptedPhotoIds: new Set(),
+  rejectedPhotoIds: new Set(),
   recordingStartedAt: null,
   recordingTimer: null,
   watchId: null,
@@ -85,9 +89,12 @@ const elements = {
   recordingTime: document.getElementById('recording-time'),
   photoImportPanel: document.getElementById('photo-import-panel'),
   photoImportButton: document.getElementById('photo-import-button'),
+  photoImportProgress: document.getElementById('photo-import-progress'),
   photoInput: document.getElementById('photo-input'),
   startRecording: document.getElementById('start-recording'),
   endRecording: document.getElementById('end-recording'),
+  deleteDiaryButton: document.getElementById('delete-diary-button'),
+  completeDiaryButton: document.getElementById('complete-diary-button'),
   navButtons: Array.from(document.querySelectorAll('[data-nav]')),
   timeline: document.getElementById('timeline'),
   calendarModal: document.getElementById('calendar-modal'),
@@ -749,6 +756,11 @@ function updateTripTexts() {
   document.title = `${title} · Travel Diary`;
 }
 
+function buildApiUrl(path) {
+  if (!API_BASE_URL) return path;
+  return `${API_BASE_URL.replace(/\/$/, '')}${path}`;
+}
+
 function updateNavButtons() {
   elements.navButtons.forEach((button) => {
     const target = button.dataset.nav;
@@ -827,6 +839,12 @@ function showToast(message) {
   showToast.timer = window.setTimeout(() => {
     elements.toast.hidden = true;
   }, 1800);
+}
+
+function setUploadProgress(text, visible = true) {
+  if (!elements.photoImportProgress) return;
+  elements.photoImportProgress.textContent = text;
+  elements.photoImportProgress.hidden = !visible;
 }
 
 function stopTracking() {
@@ -1092,6 +1110,7 @@ async function generateDiaryFromFiles(files) {
   }
 
   photoData.sort((a, b) => a.takenAt - b.takenAt);
+  const photoById = new Map(photoData.map((photo) => [photo.id, photo]));
   const clusters = buildClusters(photoData);
   const qualifying = clusters.filter((cluster) => cluster.photos.length >= PHOTO_SPOT_MIN_COUNT);
 
@@ -1110,8 +1129,11 @@ async function generateDiaryFromFiles(files) {
     const fallbackPlace = `기록 스팟 ${i + 1}`;
     const place = await resolvePlaceName(cluster.center[0], cluster.center[1], fallbackPlace);
     const photoCount = cluster.photos.length;
-    const photoUrls = cluster.photos.slice(0, 3).map((photo) => photo.dataUrl);
+    const photoUrls = cluster.photos.map((photo) => photo.url || photo.dataUrl);
+    const selectedPhoto = cluster.photos[0];
     entries.push({
+      photoId: selectedPhoto.id,
+      photoIds: cluster.photos.map((photo) => photo.id),
       time: timeLabel,
       place,
       note: `반경 ${PHOTO_SPOT_RADIUS_M}m 안에서 ${durationMinutes}분 동안 머무르며 사진 ${photoCount}장을 기록했어요.`,
@@ -1155,14 +1177,20 @@ async function generateDiaryFromFiles(files) {
 function renderTimeline(entries = state.generatedDiary || state.sampleTimeline) {
   elements.timeline.innerHTML = entries
     .map((entry, index) => {
-      const gallery = Array.isArray(entry.photoUrls)
+      const photoUrls = Array.isArray(entry.photoUrls) ? entry.photoUrls.slice(0, 3) : [];
+      const gallery = photoUrls.length
         ? `
-          <div class="timeline-gallery">
-            ${entry.photoUrls.slice(0, 4).map((url) => `<img class="timeline-thumb" src="${url}" alt="${entry.place} 사진" />`).join('')}
+          <div class="timeline-gallery timeline-gallery--${photoUrls.length}">
+            ${photoUrls.map((url, photoIndex) => `
+              <div class="timeline-photo-wrap">
+                <img class="timeline-thumb" src="${url}" alt="${entry.place} 사진 ${photoIndex + 1}" />
+                <button class="photo-feedback-button photo-feedback-button--approve" type="button" data-feedback-photo="${entry.photoIds?.[photoIndex] || entry.photoId || index}" data-feedback-kind="approve" aria-label="이 사진 좋아요">👍</button>
+                <button class="photo-feedback-button photo-feedback-button--reject" type="button" data-feedback-photo="${entry.photoIds?.[photoIndex] || entry.photoId || index}" data-feedback-kind="reject" aria-label="이 사진 별로예요">👎</button>
+              </div>
+            `).join('')}
           </div>
         `
         : '';
-      const preview = entry.mainPhoto || entry.image || '';
       return `
         <article class="timeline-entry">
           <div class="timeline-rail">
@@ -1178,7 +1206,6 @@ function renderTimeline(entries = state.generatedDiary || state.sampleTimeline) 
               <p class="timeline-count">${entry.photoCount ? `사진 ${entry.photoCount}장` : ''}</p>
               <p class="timeline-count">${entry.durationMinutes ? `${entry.durationMinutes}분 기록` : ''}</p>
             </div>
-            ${preview ? `<img class="timeline-photo" src="${preview}" alt="${entry.place} 대표 사진" />` : ''}
             ${gallery}
             <p class="timeline-note">${entry.note}</p>
           </div>
@@ -1197,6 +1224,7 @@ function renderTimeline(entries = state.generatedDiary || state.sampleTimeline) 
       }
     });
   });
+
 }
 
 function syncCreateFields() {
@@ -1243,6 +1271,9 @@ function createTrip() {
   state.recordingStartedAt = null;
   state.recordingElapsed = 0;
   state.recordingBonusSeconds = 0;
+  state.tripId = null;
+  state.acceptedPhotoIds = new Set();
+  state.rejectedPhotoIds = new Set();
   clearLiveMarkers();
   updateTripTexts();
   upsertSavedTrip(trip);
@@ -1251,6 +1282,34 @@ function createTrip() {
   setScreen('map');
   setMapState('before');
   renderTripOnMap(trip);
+
+  fetch(buildApiUrl('/api/trips'), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      title: trip.title,
+      start_date: trip.date,
+      region: trip.region,
+    }),
+  })
+    .then(async (response) => {
+      if (!response.ok) {
+        throw new Error(`Failed to create trip: ${response.status}`);
+      }
+      return response.json();
+    })
+    .then((data) => {
+      state.tripId = data.trip_id || null;
+      if (state.tripId) {
+        showToast('여행이 서버에 생성되었어요. 이제 사진을 올릴 수 있어요.');
+      }
+    })
+    .catch((error) => {
+      console.error(error);
+      showToast('여행 생성 API 연결은 실패했지만, 로컬 화면은 사용할 수 있어요.');
+    });
 }
 
 function handleNav(target) {
@@ -1278,6 +1337,74 @@ function handleNav(target) {
 
 function cleanupGeneratedPhotoUrls() {
   state.photoUrls = [];
+}
+
+async function uploadPhotosToApi(files) {
+  if (!state.tripId) return;
+
+  const formData = new FormData();
+  files.forEach((file) => {
+    formData.append('files', file);
+  });
+
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', buildApiUrl(`/api/trips/${state.tripId}/photos`));
+
+    xhr.upload.addEventListener('progress', (event) => {
+      if (!event.lengthComputable) return;
+      const percent = Math.max(0, Math.min(100, Math.round((event.loaded / event.total) * 100)));
+      setUploadProgress(`업로드 중 ${percent}%`, true);
+    });
+
+    xhr.addEventListener('load', () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        setUploadProgress('업로드 완료', true);
+        window.setTimeout(() => setUploadProgress('', false), 1200);
+        try {
+          resolve(JSON.parse(xhr.responseText));
+        } catch (error) {
+          reject(error);
+        }
+        return;
+      }
+      reject(new Error(`Photo upload failed: ${xhr.status}`));
+    });
+
+    xhr.addEventListener('error', () => reject(new Error('Photo upload failed: network error')));
+    xhr.addEventListener('abort', () => reject(new Error('Photo upload aborted')));
+    setUploadProgress('업로드 시작...', true);
+    xhr.send(formData);
+  });
+}
+
+async function submitPhotoFeedback(photoId, kind = 'reject') {
+  if (!state.tripId || !photoId) return;
+  if (kind === 'approve') {
+    state.acceptedPhotoIds.add(photoId);
+    state.rejectedPhotoIds.delete(photoId);
+  } else {
+    state.rejectedPhotoIds.add(photoId);
+    state.acceptedPhotoIds.delete(photoId);
+  }
+  const rejected_photo_ids = Array.from(state.rejectedPhotoIds);
+  const accepted_photo_ids = Array.from(state.acceptedPhotoIds);
+
+  const response = await fetch(buildApiUrl(`/api/trips/${state.tripId}/photo-feedback`), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      accepted_photo_ids,
+      rejected_photo_ids,
+      notes: 'user disliked photo',
+    }),
+  });
+  if (!response.ok) {
+    throw new Error(`Photo feedback failed: ${response.status}`);
+  }
+  return response.json();
 }
 
 function bootstrap() {
@@ -1329,15 +1456,54 @@ function bootstrap() {
     const files = Array.from(elements.photoInput.files || []).filter((file) => file.type.startsWith('image/'));
     if (!files.length) return;
     try {
+      await uploadPhotosToApi(files);
       await generateDiaryFromFiles(files);
     } catch (error) {
       console.error(error);
-      showToast('사진 처리 중 오류가 발생했어요.');
+      setUploadProgress('', false);
+      showToast('사진 업로드 또는 처리 중 오류가 발생했어요.');
+    }
+  });
+  elements.timeline.addEventListener('click', async (event) => {
+    const button = event.target.closest('[data-feedback-photo]');
+    if (!button) return;
+    const photoId = button.dataset.feedbackPhoto;
+    const kind = button.dataset.feedbackKind || 'reject';
+    if (!photoId || photoId === 'undefined') return;
+    try {
+      await submitPhotoFeedback(photoId, kind);
+      button.classList.add('is-sent');
+      showToast(kind === 'approve' ? '좋아요를 반영했어요' : '별로예요를 반영했어요');
+    } catch (error) {
+      console.error(error);
+      showToast('선호 저장 중 오류가 발생했어요.');
     }
   });
   elements.navButtons.forEach((button) => {
     button.addEventListener('click', () => handleNav(button.dataset.nav));
   });
+  if (elements.completeDiaryButton) {
+    elements.completeDiaryButton.addEventListener('click', () => {
+      setScreen('create');
+      showToast('다이어리를 닫았어요');
+    });
+  }
+  if (elements.deleteDiaryButton) {
+    elements.deleteDiaryButton.addEventListener('click', () => {
+      const confirmed = window.confirm('삭제하시겠습니까?');
+      if (!confirmed) return;
+      cleanupGeneratedPhotoUrls();
+      state.generatedDiary = null;
+      state.diaryUnlocked = false;
+      state.tripId = null;
+      state.acceptedPhotoIds = new Set();
+      state.rejectedPhotoIds = new Set();
+      renderTimeline();
+      updateNavButtons();
+      setScreen('create');
+      showToast('다이어리를 삭제했어요');
+    });
+  }
 }
 
 window.addEventListener('beforeunload', cleanupGeneratedPhotoUrls);
