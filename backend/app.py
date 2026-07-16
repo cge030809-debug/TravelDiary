@@ -156,7 +156,9 @@ def health():
     return {
         "ok": True,
         "storage": storage.storage_backend_name(),
-        "railway_volume_configured": bool(config.RAILWAY_VOLUME_MOUNT_PATH),
+        "persistent_storage_enabled": config.PERSISTENT_STORAGE_ENABLED,
+        "railway_volume_configured": bool(config.RAILWAY_VOLUME_MOUNT_PATH) or config.STORAGE_ROOT == config.RAILWAY_DEFAULT_VOLUME_PATH,
+        "storage_root": str(config.STORAGE_ROOT),
         "data_dir": str(config.DATA_DIR),
         "db_path": str(config.DB_PATH),
         "upload_dir": str(config.UPLOAD_DIR),
