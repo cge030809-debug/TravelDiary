@@ -8,6 +8,7 @@ const FOOTPRINT_MIN_DISTANCE_M = 12;
 const FOOTPRINT_MIN_GAP_MS = 15 * 1000;
 const FOOTPRINT_MIN_REPEAT_DISTANCE_M = 1;
 const CREATE_FORM_STORAGE_KEY = 'travel-diary:create-form';
+const LAST_TRIP_ID_STORAGE_KEY = 'travel-diary:last-trip-id';
 
 const state = {
   screen: 'create',
@@ -670,6 +671,90 @@ function formatDateTimeLabel(date) {
   }).format(date);
 }
 
+function saveLastTripId(tripId) {
+  if (!window.localStorage || !tripId) return;
+  window.localStorage.setItem(LAST_TRIP_ID_STORAGE_KEY, tripId);
+}
+
+function loadLastTripId() {
+  if (!window.localStorage) return null;
+  return window.localStorage.getItem(LAST_TRIP_ID_STORAGE_KEY);
+}
+
+function clearLastTripId() {
+  if (!window.localStorage) return;
+  window.localStorage.removeItem(LAST_TRIP_ID_STORAGE_KEY);
+}
+
+function diaryFromApi(diary) {
+  if (!diary) return null;
+  const timeline = Array.isArray(diary.timeline) ? diary.timeline : [];
+  return timeline.map((entry, index) => {
+    const entryDate = new Date(entry.time);
+    return {
+      photoId: diary.selected_photos?.[index]?.photo_id || entry.photo_url || index,
+      photoIds: diary.selected_photos?.slice(index, index + 3).map((photo) => photo.photo_id) || [],
+      time: formatRoundedTimeLabel(entryDate),
+      dateLabel: `${formatMonthDay(entryDate)} · ${diary.title || state.trip.title || '여행'}`,
+      dayLabel: `${index + 1}일차`,
+      place: entry.place,
+      note: entry.note,
+      photoCount: diary.selected_photos?.length || 0,
+      photoUrls: entry.photo_url ? [entry.photo_url] : [],
+      center: entry.lat && entry.lng ? [entry.lng, entry.lat] : null,
+      timestamp: entryDate,
+      durationMinutes: null,
+    };
+  });
+}
+
+async function restoreLastTrip() {
+  const tripId = loadLastTripId();
+  if (!tripId) return false;
+
+  try {
+    const [diaryResponse, photosResponse] = await Promise.all([
+      fetch(buildApiUrl(`/api/trips/${tripId}/diary`)),
+      fetch(buildApiUrl(`/api/trips/${tripId}/photos`)),
+    ]);
+    if (!diaryResponse.ok) return false;
+
+    const diary = await diaryResponse.json();
+    const restoredEntries = diaryFromApi(diary);
+    if (!restoredEntries?.length) return false;
+
+    let restoredPhotoCount = 0;
+    if (photosResponse.ok) {
+      const photosPayload = await photosResponse.json();
+      const restoredPhotos = Array.isArray(photosPayload?.photos) ? photosPayload.photos : [];
+      restoredPhotoCount = restoredPhotos.length;
+      state.photoUrls = restoredPhotos
+        .map((photo) => photo?.filename ? buildApiUrl(`/uploads/${photo.filename}`) : null)
+        .filter(Boolean);
+    }
+
+    state.tripId = tripId;
+    state.generatedDiary = restoredEntries;
+    state.diaryUnlocked = true;
+    state.trip = {
+      title: diary.title || state.trip.title,
+      date: state.trip.date,
+      region: state.trip.region,
+    };
+    updateTripTexts();
+    updateNavButtons();
+    renderTimeline(restoredEntries);
+    setScreen('diary');
+    if (restoredPhotoCount > 0) {
+      showToast(`사진 ${restoredPhotoCount}장을 다시 불러왔어요`);
+    }
+    return true;
+  } catch (error) {
+    console.warn('failed to restore last trip', error);
+    return false;
+  }
+}
+
 async function generateDiaryFromFiles(files) {
   const parsed = await Promise.all(files.map(parsePhotoFile));
   const photoData = parsed
@@ -897,6 +982,7 @@ function createTrip() {
     .then((data) => {
       state.tripId = data.trip_id || null;
       if (state.tripId) {
+        saveLastTripId(state.tripId);
         showToast('여행이 서버에 생성되었어요. 이제 사진을 올릴 수 있어요.');
       }
     })
@@ -1072,6 +1158,7 @@ function bootstrap() {
       state.generatedDiary = null;
       state.diaryUnlocked = false;
       state.tripId = null;
+      clearLastTripId();
       state.acceptedPhotoIds = new Set();
       state.rejectedPhotoIds = new Set();
       renderTimeline();
@@ -1080,6 +1167,10 @@ function bootstrap() {
       showToast('다이어리를 삭제했어요');
     });
   }
+
+  restoreLastTrip().catch((error) => {
+    console.error(error);
+  });
 }
 
 window.addEventListener('beforeunload', cleanupGeneratedPhotoUrls);

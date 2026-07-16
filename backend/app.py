@@ -68,6 +68,12 @@ def upload_photos(trip_id: str, files: list[UploadFile] = File(...)):
     return {"count": len(storage.get_photos(trip_id))}
 
 
+@app.get("/api/trips/{trip_id}/photos")
+def list_photos(trip_id: str):
+    _require_trip(trip_id)
+    return {"photos": storage.get_photos(trip_id)}
+
+
 @app.post("/api/trips/{trip_id}/generate", response_model=Diary)
 def generate(trip_id: str):
     _require_trip(trip_id)
