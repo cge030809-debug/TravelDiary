@@ -763,16 +763,26 @@ function renderTripOnMap(trip) {
     }
   });
 
-  // 실시간 GPS 기록이 없고 업로드한 사진만 있는 여행: 사진 위치로 경로·발자취 표시
-  if (!samples.length && Array.isArray(trip?.photos) && trip.photos.length) {
-    const photoPoints = trip.photos
-      .filter((p) => Number.isFinite(p.lng) && Number.isFinite(p.lat))
-      .sort((a, b) => new Date(a.takenAt) - new Date(b.takenAt));
-    if (photoPoints.length) {
-      const photoCoords = photoPoints.map((p) => [p.lng, p.lat]);
-      setRouteLine(photoCoords);
-      photoPoints.forEach((p) => addFootprint([p.lng, p.lat]));
-      centerMapOn(photoCoords[photoCoords.length - 1], 14);
+  // 실시간 GPS 기록이 없고 업로드한 사진만 있는 여행: 사진/다이어리 위치로 경로·발자취 표시
+  if (!samples.length) {
+    let points = [];
+    // 1순위: 저장된 사진 좌표
+    if (Array.isArray(trip?.photos) && trip.photos.length) {
+      points = trip.photos
+        .filter((p) => Number.isFinite(p.lng) && Number.isFinite(p.lat))
+        .sort((a, b) => new Date(a.takenAt) - new Date(b.takenAt))
+        .map((p) => [p.lng, p.lat]);
+    }
+    // 2순위: 다이어리 엔트리 위치(항상 보존됨)
+    if (!points.length && Array.isArray(trip?.diary) && trip.diary.length) {
+      points = trip.diary
+        .filter((e) => Array.isArray(e.center) && Number.isFinite(e.center[0]) && Number.isFinite(e.center[1]))
+        .map((e) => e.center);
+    }
+    if (points.length) {
+      setRouteLine(points);
+      points.forEach((pt) => addFootprint(pt));
+      centerMapOn(points[points.length - 1], 14);
     }
   }
 
@@ -829,6 +839,15 @@ function toAbsolutePhotoUrl(url) {
   if (!url) return '';
   if (/^https?:\/\//.test(url) || url.startsWith('data:')) return url;
   return buildApiUrl(url);
+}
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 function updateNavButtons() {
@@ -1173,11 +1192,23 @@ async function resolvePlaceName(lng, lat, fallbackLabel) {
 }
 
 async function suggestTitleFromLocation(lng, lat) {
-  if (!elements.tripTitle || elements.tripTitle.value.trim()) return;
+  if (!Number.isFinite(lng) || !Number.isFinite(lat)) return;
+  // 사용자가 직접 넣은 제목이 있으면 유지. 비었거나 기본값('새 여행')이면 교체.
+  const current = (state.trip.title || '').trim();
+  if (current && current !== '새 여행') return;
+
   const placeName = await resolvePlaceName(lng, lat, '');
-  if (placeName) {
-    elements.tripTitle.value = `${placeName} 여행`;
+  if (!placeName) return;
+  const title = `${placeName.split(',')[0].trim()} 여행`;
+
+  state.trip.title = title;
+  if (elements.tripTitle) elements.tripTitle.value = title;
+  if (state.activeTrip) {
+    state.activeTrip.title = title;
+    upsertSavedTrip(state.activeTrip);
   }
+  updateTripTexts();
+  renderTripHistory();
 }
 
 function formatTimeLabel(date) {
@@ -1351,10 +1382,6 @@ async function generateDiaryFromBackend() {
 
   state.generatedDiary = entries;
   state.diaryUnlocked = true;
-  if (data.title && !state.trip.title) {
-    state.trip.title = data.title;
-    updateTripTexts();
-  }
   if (state.activeTrip) {
     state.activeTrip.status = 'completed';
     state.activeTrip.diary = entries;
@@ -1369,6 +1396,16 @@ async function generateDiaryFromBackend() {
       }));
     upsertSavedTrip(state.activeTrip);
     renderTripOnMap(state.activeTrip);
+  }
+  // 위치 기반 자동 제목 (사진 첫 스팟 기준). 실패 시 백엔드 제목으로 폴백.
+  const firstEntry = entries.find((e) => Array.isArray(e.center));
+  if (firstEntry) {
+    await suggestTitleFromLocation(firstEntry.center[0], firstEntry.center[1]);
+  }
+  if (!(state.trip.title || '').trim() && data.title) {
+    state.trip.title = data.title;
+    if (state.activeTrip) { state.activeTrip.title = data.title; upsertSavedTrip(state.activeTrip); }
+    updateTripTexts();
   }
   updateNavButtons();
   renderTripHistory();
@@ -1478,6 +1515,12 @@ async function generateDiaryFromFiles(files) {
   const photoCoordinates = photoData.map((photo) => [photo.lng, photo.lat]);
   setRouteLine(photoCoordinates);
 
+  // 위치 기반 자동 제목 (첫 사진 기준)
+  const firstPhotoPoint = photoData.find((p) => Number.isFinite(p.lng) && Number.isFinite(p.lat));
+  if (firstPhotoPoint) {
+    await suggestTitleFromLocation(firstPhotoPoint.lng, firstPhotoPoint.lat);
+  }
+
   updateNavButtons();
   renderTripHistory();
   renderTimeline(entries);
@@ -1489,12 +1532,17 @@ function renderTimeline(entries = state.generatedDiary || state.sampleTimeline) 
   elements.timeline.innerHTML = entries
     .map((entry, index) => {
       const photoUrls = Array.isArray(entry.photoUrls) ? entry.photoUrls.slice(0, 3) : [];
+      const place = escapeHtml(entry.place || '기록 스팟');
+      const note = entry.note || '';
+      const noteHtml = escapeHtml(note);
+      const dateLabel = escapeHtml(entry.dateLabel || '');
+      const timeLabel = escapeHtml(entry.dayLabel ? `${entry.dayLabel} · ${entry.time}` : entry.time || '');
       const gallery = photoUrls.length
         ? `
           <div class="timeline-gallery timeline-gallery--${photoUrls.length}">
             ${photoUrls.map((url, photoIndex) => `
               <div class="timeline-photo-wrap">
-                <img class="timeline-thumb" src="${url}" alt="${entry.place} 사진 ${photoIndex + 1}" />
+                <img class="timeline-thumb" src="${escapeHtml(url)}" alt="${place} 사진 ${photoIndex + 1}" />
                 <button class="photo-feedback-button photo-feedback-button--approve" type="button" data-feedback-photo="${entry.photoIds?.[photoIndex] || entry.photoId || index}" data-feedback-kind="approve" aria-label="이 사진 좋아요">👍</button>
                 <button class="photo-feedback-button photo-feedback-button--reject" type="button" data-feedback-photo="${entry.photoIds?.[photoIndex] || entry.photoId || index}" data-feedback-kind="reject" aria-label="이 사진 별로예요">👎</button>
               </div>
@@ -1510,19 +1558,30 @@ function renderTimeline(entries = state.generatedDiary || state.sampleTimeline) 
           <div class="timeline-card">
             <div class="timeline-meta">
               <div class="timeline-time-stack">
-                <p class="timeline-date">${entry.dateLabel || ''}</p>
-                <p class="timeline-time">${entry.dayLabel ? `${entry.dayLabel} · ${entry.time}` : entry.time}</p>
+                <p class="timeline-date">${dateLabel}</p>
+                <p class="timeline-time">${timeLabel}</p>
               </div>
               <button class="timeline-button" type="button" data-view-map="${index}">지도에서 보기</button>
             </div>
-            <h3 class="timeline-place">${entry.place}</h3>
+            <h3 class="timeline-place">${place}</h3>
             <div class="timeline-photo-row">
               <p class="timeline-count">${entry.photoCount ? `사진 ${entry.photoCount}장` : ''}</p>
               <p class="timeline-count">${entry.durationMinutes ? `${entry.durationMinutes}분 기록` : ''}</p>
             </div>
             ${photoUrls.length >= 3 ? '<p class="timeline-note timeline-note--hint">대표 사진 3장을 골라 보여드려요.</p>' : ''}
             ${gallery}
-            <p class="timeline-note">${entry.note}</p>
+            <div class="timeline-note-block" data-note-block="${index}">
+              <div class="timeline-note-head">
+                <span class="timeline-note-label">AI 메모 초안</span>
+                <button class="timeline-note-edit" type="button" data-edit-note="${index}">수정</button>
+              </div>
+              <p class="timeline-note" data-note-text="${index}">${noteHtml}</p>
+              <textarea class="timeline-note-input" data-note-input="${index}" maxlength="300" hidden>${noteHtml}</textarea>
+              <div class="timeline-note-actions" data-note-actions="${index}" hidden>
+                <button class="timeline-note-save" type="button" data-save-note="${index}">저장</button>
+                <button class="timeline-note-cancel" type="button" data-cancel-note="${index}">취소</button>
+              </div>
+            </div>
           </div>
         </article>
       `;
@@ -1537,6 +1596,40 @@ function renderTimeline(entries = state.generatedDiary || state.sampleTimeline) 
       if (entry?.center && state.map) {
         centerMapOn(entry.center, 16.5);
       }
+    });
+  });
+
+  elements.timeline.querySelectorAll('[data-edit-note]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const index = Number(button.dataset.editNote);
+      const input = elements.timeline.querySelector(`[data-note-input="${index}"]`);
+      const text = elements.timeline.querySelector(`[data-note-text="${index}"]`);
+      const actions = elements.timeline.querySelector(`[data-note-actions="${index}"]`);
+      if (!input || !text || !actions) return;
+      input.hidden = false;
+      text.hidden = true;
+      actions.hidden = false;
+      button.hidden = true;
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+    });
+  });
+
+  elements.timeline.querySelectorAll('[data-cancel-note]').forEach((button) => {
+    button.addEventListener('click', () => {
+      renderTimeline(entries);
+    });
+  });
+
+  elements.timeline.querySelectorAll('[data-save-note]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const index = Number(button.dataset.saveNote);
+      const input = elements.timeline.querySelector(`[data-note-input="${index}"]`);
+      if (!input) return;
+      button.disabled = true;
+      const saved = await saveDiaryNote(index, input.value, entries);
+      button.disabled = false;
+      if (saved) renderTimeline(entries);
     });
   });
 
@@ -1838,6 +1931,62 @@ async function submitPhotoFeedback(photoId, kind = 'reject') {
     throw new Error(`Photo feedback failed: ${response.status}`);
   }
   return response.json();
+}
+
+function persistDiaryNoteLocally(entryIndex, note, entries) {
+  if (Array.isArray(entries) && entries[entryIndex]) {
+    entries[entryIndex].note = note;
+  }
+  if (Array.isArray(state.generatedDiary) && state.generatedDiary[entryIndex]) {
+    state.generatedDiary[entryIndex].note = note;
+  }
+
+  const selectedTrip = getSelectedTrip();
+  if (selectedTrip?.diary?.[entryIndex]) {
+    selectedTrip.diary[entryIndex].note = note;
+    upsertSavedTrip(selectedTrip);
+  }
+  if (state.activeTrip?.diary?.[entryIndex]) {
+    state.activeTrip.diary[entryIndex].note = note;
+    upsertSavedTrip(state.activeTrip);
+  }
+}
+
+async function persistDiaryNoteToApi(entryIndex, note) {
+  if (!state.tripId) return null;
+  const response = await fetch(buildApiUrl(`/api/trips/${state.tripId}/diary/notes/${entryIndex}`), {
+    method: 'PATCH',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ note }),
+  });
+  if (!response.ok) {
+    throw new Error(`Diary note update failed: ${response.status}`);
+  }
+  return response.json();
+}
+
+async function saveDiaryNote(entryIndex, note, entries) {
+  const nextNote = note.trim();
+  if (!nextNote) {
+    showToast('메모는 비워둘 수 없어요.');
+    return false;
+  }
+  if (nextNote.length > 300) {
+    showToast('메모는 300자 이내로 작성해 주세요.');
+    return false;
+  }
+
+  persistDiaryNoteLocally(entryIndex, nextNote, entries);
+  try {
+    await persistDiaryNoteToApi(entryIndex, nextNote);
+    showToast('메모를 저장했어요.');
+  } catch (error) {
+    console.warn(error);
+    showToast('메모를 이 기기에 저장했어요.');
+  }
+  return true;
 }
 
 function bootstrap() {
