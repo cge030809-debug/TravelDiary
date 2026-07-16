@@ -1038,6 +1038,17 @@ function startRecording() {
   });
 
   state.recordingTimer = window.setInterval(updateRecordingTimer, 1000);
+
+  // 첫 위치 받으면 여행 제목 자동 채우기
+  const initialWatchId = navigator.geolocation.watchPosition(
+    (pos) => {
+      const { latitude: lat, longitude: lng } = pos.coords;
+      navigator.geolocation.clearWatch(initialWatchId);
+      suggestTitleFromLocation(lng, lat);
+    },
+    () => {}, // 에러 무시
+    { enableHighAccuracy: true, timeout: 5000 }
+  );
 }
 
 function endRecording() {
@@ -1122,6 +1133,14 @@ async function resolvePlaceName(lng, lat, fallbackLabel) {
     return feature?.place_name || fallbackLabel;
   } catch {
     return fallbackLabel;
+  }
+}
+
+async function suggestTitleFromLocation(lng, lat) {
+  if (!elements.tripTitle || elements.tripTitle.value.trim()) return;
+  const placeName = await resolvePlaceName(lng, lat, '');
+  if (placeName) {
+    elements.tripTitle.value = `${placeName} 여행`;
   }
 }
 
