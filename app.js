@@ -1370,6 +1370,16 @@ async function generateDiaryFromFiles(files) {
     }));
     upsertSavedTrip(state.activeTrip);
   }
+
+  // 지도에 사진 위치 표시
+  photoData.forEach((photo) => {
+    addFootprint([photo.lng, photo.lat]);
+  });
+
+  // 경로선 그리기
+  const photoCoordinates = photoData.map((photo) => [photo.lng, photo.lat]);
+  setRouteLine(photoCoordinates);
+
   updateNavButtons();
   renderTripHistory();
   renderTimeline(entries);
