@@ -14,6 +14,8 @@ const PHOTO_LOCATION_MATCH_WINDOW_MS = 30 * 60 * 1000;
 const FOOTPRINT_MIN_DISTANCE_M = 12;
 const FOOTPRINT_MIN_GAP_MS = 15 * 1000;
 const FOOTPRINT_MIN_REPEAT_DISTANCE_M = 1;
+const LOCATION_SYNC_BATCH_SIZE = 5;
+const LOCATION_SYNC_MIN_INTERVAL_MS = 15 * 1000;
 const CREATE_FORM_STORAGE_KEY = 'travel-diary:create-form';
 const LAST_TRIP_ID_STORAGE_KEY = 'travel-diary:last-trip-id';
 
@@ -37,6 +39,9 @@ const state = {
   locationSamples: [],
   lastFootprintAt: 0,
   lastFootprintLngLat: null,
+  pendingLocationPoints: [],
+  lastLocationSyncAt: 0,
+  locationSyncInFlight: false,
   generatedDiary: null,
   photoUrls: [],
   savedTrips: [],
@@ -1172,6 +1177,51 @@ function updateRecordingTimer() {
   elements.recordingTime.textContent = formatElapsed(elapsed);
 }
 
+async function flushLocationQueue({ force = false } = {}) {
+  if (!state.tripId || state.locationSyncInFlight || !state.pendingLocationPoints.length) return false;
+  const now = Date.now();
+  if (
+    !force &&
+    state.pendingLocationPoints.length < LOCATION_SYNC_BATCH_SIZE &&
+    now - state.lastLocationSyncAt < LOCATION_SYNC_MIN_INTERVAL_MS
+  ) {
+    return false;
+  }
+
+  const points = state.pendingLocationPoints.slice();
+  state.locationSyncInFlight = true;
+  try {
+    const response = await fetch(buildApiUrl(`/api/trips/${state.tripId}/locations`), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ points }),
+    });
+    if (!response.ok) {
+      throw new Error(`Location sync failed: ${response.status}`);
+    }
+    state.pendingLocationPoints.splice(0, points.length);
+    state.lastLocationSyncAt = Date.now();
+    return true;
+  } catch (error) {
+    console.warn('위치 기록 서버 저장 실패(로컬에는 저장됨):', error);
+    return false;
+  } finally {
+    state.locationSyncInFlight = false;
+  }
+}
+
+function queueLocationForApi(position) {
+  state.pendingLocationPoints.push({
+    lat: position.coords.latitude,
+    lng: position.coords.longitude,
+    time: new Date(position.timestamp || Date.now()).toISOString(),
+    accuracy_m: Number.isFinite(position.coords.accuracy) ? position.coords.accuracy : null,
+  });
+  flushLocationQueue();
+}
+
 function showToast(message) {
   elements.toast.querySelector('p').textContent = message;
   elements.toast.hidden = false;
@@ -1264,6 +1314,7 @@ function handlePosition(position) {
     setRouteLine(state.activeTrip.recording.samples.map((sample) => [sample.lng, sample.lat]));
     upsertSavedTrip(state.activeTrip);
   }
+  queueLocationForApi(position);
 
   ensureCurrentMarker(lngLat);
   centerMapOn(lngLat);
@@ -1330,6 +1381,8 @@ function startRecording() {
 
   clearLiveMarkers();
   state.locationSamples = [];
+  state.pendingLocationPoints = [];
+  state.lastLocationSyncAt = 0;
   state.generatedDiary = null;
   state.diaryUnlocked = false;
   updateNavButtons();
@@ -1377,6 +1430,7 @@ function startRecording() {
 function endRecording() {
   stopTracking();
   updateRecordingTimer();
+  flushLocationQueue({ force: true });
   setMapState('after');
   if (state.activeTrip) {
     state.activeTrip.recording.endedAt = new Date().toISOString();
@@ -2323,6 +2377,8 @@ function createTrip() {
   state.generatedDiary = null;
   state.diaryUnlocked = false;
   state.locationSamples = [];
+  state.pendingLocationPoints = [];
+  state.lastLocationSyncAt = 0;
   state.recordingStartedAt = null;
   state.recordingElapsed = 0;
   state.recordingBonusSeconds = 0;
@@ -2359,6 +2415,7 @@ function createTrip() {
       state.tripId = data.trip_id || null;
       if (state.tripId) {
         saveLastTripId(state.tripId);
+        flushLocationQueue({ force: true });
         showToast('여행이 서버에 생성되었어요. 이제 사진을 올릴 수 있어요.');
       }
     })
