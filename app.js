@@ -5,7 +5,7 @@ const TRIP_DB_VERSION = 1;
 const TRIP_DB_STORE = 'state';
 const TRIP_DB_KEY = 'trips';
 const API_BASE_URL = window.API_BASE_URL || '';
-const DEMO_TRIP_MANIFEST_URL = '/demo/europe-summer/manifest.json';
+const DEMO_TRIP_MANIFEST_URL = '/demo/europe-summer/manifest.json?v=20260716aa';
 const PHOTO_SPOT_RADIUS_M = 100;
 const PHOTO_SPOT_GAP_MS = 2 * 60 * 1000;
 const REPRESENTATIVE_PHOTOS_PER_SPOT = 3;
