@@ -139,7 +139,7 @@ function makePhotoData(title, baseColor, accentColor) {
 
 function formatDateLabel(dateValue) {
   if (!dateValue) return '날짜를 선택해 주세요.';
-  const date = new Date(dateValue);
+  const date = parseLocalDateValue(dateValue);
   if (Number.isNaN(date.getTime())) return dateValue;
   return new Intl.DateTimeFormat('ko-KR', {
     year: 'numeric',
@@ -1164,11 +1164,7 @@ function buildClusters(photos, allowCrossDate = false) {
     const lastGroup = groups[groups.length - 1];
     const photoPoint = [photo.lng, photo.lat];
     const photoTime = photo.takenAt.getTime();
-    const photoDateKey = getLocalDateKey(photo.takenAt);
-    if (
-      lastGroup &&
-      (allowCrossDate || lastGroup.dateKey === photoDateKey)
-    ) {
+    if (lastGroup) {
       const gap = photoTime - lastGroup.lastTakenAt;
       const distanceToAnchor = distanceMeters(lastGroup.anchorCenter, photoPoint);
       if (
@@ -1186,7 +1182,6 @@ function buildClusters(photos, allowCrossDate = false) {
       anchorCenter: photoPoint,
       firstTakenAt: photoTime,
       lastTakenAt: photoTime,
-      dateKey: photoDateKey,
     });
   }
   return groups;
@@ -1548,10 +1543,10 @@ async function generateDiaryFromFiles(files) {
 
   photoData.sort((a, b) => a.takenAt - b.takenAt);
   const dateKeys = [...new Set(photoData.map((photo) => getLocalDateKey(photo.takenAt)).filter(Boolean))];
-  const allowCrossDate = dateKeys.length > 1
-    ? window.confirm('사진 날짜가 달라요. 같은 여행으로 이어서 묶을까요?')
-    : false;
-  const clusters = buildClusters(photoData, allowCrossDate);
+  if (dateKeys.length > 1) {
+    window.confirm('사진 날짜가 달라요. 같은 여행으로 이어서 묶을까요?');
+  }
+  const clusters = buildClusters(photoData, true);
   const clusterSummary = clusters
     .map((cluster, index) => {
       const firstPhoto = cluster.photos[0];
@@ -1760,7 +1755,23 @@ function loadCreateFormState() {
 
 function formatLocalDate(date) {
   if (!(date instanceof Date) || Number.isNaN(date.getTime())) return '';
-  return date.toISOString().slice(0, 10);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function parseLocalDateValue(dateValue) {
+  if (!dateValue) return new Date(NaN);
+  if (dateValue instanceof Date) return new Date(dateValue.getFullYear(), dateValue.getMonth(), dateValue.getDate());
+  const text = String(dateValue).trim();
+  const match = text.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (match) {
+    return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  }
+  const parsed = new Date(text);
+  if (Number.isNaN(parsed.getTime())) return new Date(NaN);
+  return new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate());
 }
 
 function syncTripDateFromPhotos(photoData) {
