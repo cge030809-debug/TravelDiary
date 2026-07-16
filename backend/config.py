@@ -29,8 +29,8 @@ ALLOWED_MIME = {"image/jpeg", "image/png"}
 MAPBOX_ACCESS_TOKEN = os.getenv("MAPBOX_ACCESS_TOKEN", "")
 AI_API_KEY = os.getenv("AI_API_KEY", "")
 
-# 대표사진 최대 개수
-MAX_SELECTED_PHOTOS = 3
+# 대표사진 최대 개수 (같은 장소는 한 그룹으로 묶이므로, 서로 다른 스팟 수 기준)
+MAX_SELECTED_PHOTOS = 12
 
 # 필요한 폴더 보장
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
