@@ -1815,10 +1815,35 @@ function getEntryPhotoIds(entry, diary, index, count) {
   return diary.selected_photos?.slice(index, index + count).map((photo) => photo.photo_id) || [];
 }
 
+function backfillDiaryEntryCenters(entries) {
+  const known = entries
+    .filter((entry) => Array.isArray(entry.center) && Number.isFinite(entry.center[0]) && Number.isFinite(entry.center[1]))
+    .map((entry) => ({
+      center: entry.center,
+      timestamp: entry.timestamp instanceof Date ? entry.timestamp.getTime() : new Date(entry.timestamp || 0).getTime(),
+      dateKey: getLocalDateKey(entry.timestamp instanceof Date ? entry.timestamp : new Date(entry.timestamp || 0)),
+    }));
+  if (!known.length) return entries;
+
+  return entries.map((entry) => {
+    if (Array.isArray(entry.center) && Number.isFinite(entry.center[0]) && Number.isFinite(entry.center[1])) {
+      return entry;
+    }
+    const entryTime = entry.timestamp instanceof Date ? entry.timestamp.getTime() : new Date(entry.timestamp || 0).getTime();
+    const entryDateKey = getLocalDateKey(entry.timestamp instanceof Date ? entry.timestamp : new Date(entry.timestamp || 0));
+    const sameDateAnchors = known.filter((anchor) => anchor.dateKey && anchor.dateKey === entryDateKey);
+    const anchors = sameDateAnchors.length ? sameDateAnchors : known;
+    const fallback = anchors
+      .slice()
+      .sort((a, b) => Math.abs(a.timestamp - entryTime) - Math.abs(b.timestamp - entryTime))[0];
+    return fallback ? { ...entry, center: fallback.center, inferredCenter: true } : entry;
+  });
+}
+
 function diaryFromApi(diary) {
   if (!diary) return null;
   const timeline = Array.isArray(diary.timeline) ? diary.timeline : [];
-  return timeline.map((entry, index) => {
+  const entries = timeline.map((entry, index) => {
     const entryDate = new Date(entry.time);
     const photoUrls = getEntryPhotoUrls(entry);
     const photoCount = Number.isFinite(entry.photo_count)
@@ -1838,6 +1863,7 @@ function diaryFromApi(diary) {
       durationMinutes: null,
     };
   });
+  return backfillDiaryEntryCenters(entries);
 }
 
 function locationSamplesFromApi(locations = []) {

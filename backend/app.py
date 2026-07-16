@@ -156,7 +156,6 @@ def health():
     return {
         "ok": True,
         "storage": storage.storage_backend_name(),
-        "supabase_configured": bool(config.SUPABASE_URL and config.SUPABASE_SERVICE_ROLE_KEY),
         "railway_volume_configured": bool(config.RAILWAY_VOLUME_MOUNT_PATH),
         "data_dir": str(config.DATA_DIR),
         "db_path": str(config.DB_PATH),

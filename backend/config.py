@@ -38,14 +38,6 @@ ALLOWED_MIME = {"image/jpeg", "image/png"}
 MAPBOX_ACCESS_TOKEN = os.getenv("MAPBOX_ACCESS_TOKEN", "")
 AI_API_KEY = os.getenv("AI_API_KEY", "")
 
-# Supabase 저장소. 두 값이 모두 있으면 backend/storage.py 가 SQLite 대신
-# Supabase REST API(PostgREST)를 사용합니다. 서비스 롤 키는 서버 환경변수에만 둡니다.
-SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
-SUPABASE_SERVICE_ROLE_KEY = (
-    os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
-    or os.getenv("SUPABASE_SECRET_KEY", "")
-)
-
 # 대표사진 최대 개수 (같은 장소는 한 그룹으로 묶이므로, 서로 다른 스팟 수 기준)
 MAX_SELECTED_PHOTOS = 12
 
