@@ -1,9 +1,9 @@
-const CACHE_NAME = 'travel-diary-cache-v10';
+const CACHE_NAME = 'travel-diary-cache-v11';
 const ASSETS = [
   '/',
   '/index.html',
-  '/styles.css?v=20260716i',
-  '/app.js?v=20260716i',
+  '/styles.css?v=20260716j',
+  '/app.js?v=20260716j',
   '/manifest.json',
 ];
 
@@ -30,15 +30,12 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
   event.respondWith(
-    caches.match(event.request).then((cached) => {
-      if (cached) return cached;
-      return fetch(event.request)
-        .then((response) => {
-          const responseClone = response.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, responseClone));
-          return response;
-        })
-        .catch(() => cached);
-    }),
+    fetch(event.request)
+      .then((response) => {
+        const responseClone = response.clone();
+        caches.open(CACHE_NAME).then((cache) => cache.put(event.request, responseClone));
+        return response;
+      })
+      .catch(() => caches.match(event.request)),
   );
 });

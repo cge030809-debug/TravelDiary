@@ -45,6 +45,7 @@ const state = {
   activeTrip: null,
   calendarOpen: false,
   calendarMonth: null,
+  calendarSelectedDateKey: null,
   trip: {
     title: '',
     date: '',
@@ -237,7 +238,28 @@ function getTripByDateKey(dateKey) {
   return state.savedTrips.find((trip) => normalizeDateKey(trip.date) === dateKey) || null;
 }
 
+function getCalendarSelectedDateKey() {
+  return normalizeDateKey(
+    state.calendarSelectedDateKey ||
+      state.trip.date ||
+      elements.tripDate?.value ||
+      getSelectedTrip()?.date ||
+      new Date(),
+  );
+}
+
+function getCalendarAnchorDate() {
+  const selectedKey = getCalendarSelectedDateKey();
+  const parsed = new Date(`${selectedKey}T00:00:00`);
+  if (!Number.isNaN(parsed.getTime())) return parsed;
+  return new Date();
+}
+
 function selectCalendarDate(dateKey) {
+  state.calendarSelectedDateKey = dateKey;
+  elements.tripDate.value = dateKey;
+  saveCreateFormState();
+
   const trip = getTripByDateKey(dateKey);
   if (trip) {
     pickTrip(trip.id);
@@ -246,21 +268,37 @@ function selectCalendarDate(dateKey) {
     return;
   }
 
-  elements.tripDate.value = dateKey;
-  saveCreateFormState();
   state.trip.date = dateKey;
+  const selectedTrip = state.savedTrips.find((item) => item.id === state.selectedTripId) || null;
+  const canRetagActiveTrip =
+    selectedTrip &&
+    selectedTrip.id === state.activeTripId &&
+    ['draft', 'recording', 'recorded'].includes(selectedTrip.status || 'draft');
 
-  const selectedTrip = getSelectedTrip();
-  if (selectedTrip) {
+  if (canRetagActiveTrip) {
     selectedTrip.date = dateKey;
     if (state.activeTrip?.id === selectedTrip.id) {
       state.activeTrip.date = dateKey;
     }
     upsertSavedTrip(selectedTrip);
+  } else {
+    state.selectedTripId = null;
+    state.activeTripId = null;
+    state.activeTrip = null;
+    state.generatedDiary = null;
+    state.diaryUnlocked = false;
   }
 
   updateTripTexts();
   renderTripHistory();
+  if (state.screen === 'map') {
+    clearLiveMarkers();
+    setMapState('before');
+  }
+  if (state.screen === 'diary') {
+    renderTimeline(state.sampleTimeline);
+  }
+  updateNavButtons();
   renderCalendar();
   closeCalendar();
   showToast(`${formatDateLabel(dateKey)} 날짜로 선택했어요.`);
@@ -270,15 +308,8 @@ function getCalendarMonthDate() {
   if (state.calendarMonth instanceof Date && !Number.isNaN(state.calendarMonth.getTime())) {
     return new Date(state.calendarMonth.getFullYear(), state.calendarMonth.getMonth(), 1);
   }
-  const selectedTrip = getSelectedTrip();
-  if (selectedTrip?.date) {
-    const parsed = new Date(`${normalizeDateKey(selectedTrip.date)}T00:00:00`);
-    if (!Number.isNaN(parsed.getTime())) {
-      return new Date(parsed.getFullYear(), parsed.getMonth(), 1);
-    }
-  }
-  const now = new Date();
-  return new Date(now.getFullYear(), now.getMonth(), 1);
+  const anchor = getCalendarAnchorDate();
+  return new Date(anchor.getFullYear(), anchor.getMonth(), 1);
 }
 
 function setCalendarMonth(date) {
@@ -287,10 +318,7 @@ function setCalendarMonth(date) {
 }
 
 function openCalendar() {
-  const selectedTrip = getSelectedTrip();
-  const anchor = selectedTrip?.date
-    ? new Date(`${normalizeDateKey(selectedTrip.date)}T00:00:00`)
-    : new Date();
+  const anchor = getCalendarAnchorDate();
   state.calendarMonth = new Date(anchor.getFullYear(), anchor.getMonth(), 1);
   state.calendarOpen = true;
   if (elements.calendarModal) {
@@ -319,7 +347,7 @@ function renderCalendar() {
   const firstDay = new Date(year, monthIndex, 1);
   const startOffset = firstDay.getDay();
   const daysInMonth = new Date(year, monthIndex + 1, 0).getDate();
-  const selectedDateKey = normalizeDateKey(getSelectedTrip()?.date || state.trip.date);
+  const selectedDateKey = getCalendarSelectedDateKey();
   const tripMap = new Map(state.savedTrips.map((trip) => [normalizeDateKey(trip.date), trip]));
 
   elements.calendarMonthLabel.textContent = formatCalendarMonth(monthDate);
@@ -342,7 +370,7 @@ function renderCalendar() {
     if (dateKey === selectedDateKey) button.classList.add('is-selected');
     button.innerHTML = `
       <span class="calendar-day-number">${formatCalendarDay(dayDate)}</span>
-      <span class="calendar-day-label">${trip ? trip.title : '기록 없음'}</span>
+      <span class="calendar-day-label">${trip ? trip.title : '선택 가능'}</span>
     `;
     button.addEventListener('click', () => {
       selectCalendarDate(dateKey);
@@ -513,8 +541,9 @@ function upsertSavedTrip(trip) {
   return record;
 }
 
-function getSelectedTrip() {
-  return state.savedTrips.find((trip) => trip.id === state.selectedTripId) || state.savedTrips[0] || null;
+function getSelectedTrip({ fallback = true } = {}) {
+  const selected = state.savedTrips.find((trip) => trip.id === state.selectedTripId) || null;
+  return selected || (fallback ? state.savedTrips[0] || null : null);
 }
 
 function getTripMapState(trip) {
@@ -548,6 +577,7 @@ function syncSelectedTripView() {
     date: trip.date,
     region: trip.region,
   };
+  state.calendarSelectedDateKey = normalizeDateKey(trip.date);
   if (String(trip.id || '').startsWith('trip_')) {
     state.tripId = trip.id;
     saveLastTripId(trip.id);
@@ -567,6 +597,7 @@ function pickTrip(tripId) {
   state.selectedTripId = tripId;
   const trip = syncSelectedTripView();
   if (!trip) return;
+  state.calendarSelectedDateKey = normalizeDateKey(trip.date);
   if (state.screen === 'map') renderTripOnMap(trip);
 }
 
@@ -2133,6 +2164,9 @@ function syncCreateFields() {
   elements.tripTitle.value = stored.title || '';
   elements.tripDate.value = stored.date || '';
   elements.tripRegion.value = stored.region || '';
+  if (stored.date) {
+    state.calendarSelectedDateKey = normalizeDateKey(stored.date);
+  }
 }
 
 function saveCreateFormState() {
@@ -2210,6 +2244,7 @@ function createTrip() {
     date: trip.date,
     region: trip.region,
   };
+  state.calendarSelectedDateKey = normalizeDateKey(trip.date);
   state.generatedDiary = null;
   state.diaryUnlocked = false;
   state.locationSamples = [];
@@ -2285,7 +2320,8 @@ function createDraftTripFromCurrentFields() {
 }
 
 function ensureActiveTripForMap() {
-  let trip = getSelectedTrip();
+  const selectedDateKey = getCalendarSelectedDateKey();
+  let trip = getSelectedTrip({ fallback: false }) || getTripByDateKey(selectedDateKey);
   if (!trip) {
     trip = createDraftTripFromCurrentFields();
   }
@@ -2297,6 +2333,7 @@ function ensureActiveTripForMap() {
     date: trip.date,
     region: trip.region,
   };
+  state.calendarSelectedDateKey = normalizeDateKey(trip.date);
   state.locationSamples = trip.recording?.samples ?? [];
   updateTripTexts();
   renderTripHistory();
@@ -2407,7 +2444,7 @@ function handleNav(target) {
     return;
   }
   if (target === 'diary' && !state.diaryUnlocked) return;
-  let trip = target === 'map' || target === 'diary' ? syncSelectedTripView() : null;
+  let trip = target === 'diary' ? syncSelectedTripView() : null;
   closeCalendar();
   if (target === 'map') {
     trip = ensureActiveTripForMap();
@@ -2601,7 +2638,11 @@ function bootstrap() {
     if (files.length) await handleLivePhotoCapture(files);
   });
   elements.tripTitle.addEventListener('input', saveCreateFormState);
-  elements.tripDate.addEventListener('input', saveCreateFormState);
+  elements.tripDate.addEventListener('input', () => {
+    state.calendarSelectedDateKey = normalizeDateKey(elements.tripDate.value);
+    state.trip.date = elements.tripDate.value;
+    saveCreateFormState();
+  });
   elements.tripRegion.addEventListener('input', saveCreateFormState);
   elements.startRecording.addEventListener('click', startRecording);
   elements.endRecording.addEventListener('click', endRecording);

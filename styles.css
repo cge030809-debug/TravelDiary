@@ -960,7 +960,14 @@ textarea:focus-visible {
 }
 
 .calendar-day.is-muted {
-  opacity: 0.4;
+  background: rgba(255, 255, 255, 0.58);
+  color: var(--muted);
+  opacity: 1;
+}
+
+.calendar-day:hover {
+  border-color: rgba(222, 123, 85, 0.34);
+  box-shadow: 0 8px 18px rgba(80, 53, 40, 0.08);
 }
 
 .calendar-day.is-selected {
