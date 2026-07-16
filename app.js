@@ -47,6 +47,7 @@ const state = {
   lastLocationSyncAt: 0,
   locationSyncInFlight: false,
   generatedDiary: null,
+  diaryDateFilter: null,
   photoUrls: [],
   savedTrips: [],
   selectedTripId: null,
@@ -169,10 +170,10 @@ function formatElapsed(seconds) {
   return `${hrs}:${mins}:${secs}`;
 }
 
-function makeFootprintElement() {
+function makeFootprintElement({ spot = false } = {}) {
   const el = document.createElement('div');
-  el.className = 'footprint-marker';
-  el.innerHTML = '<span aria-hidden="true"></span>';
+  el.className = spot ? 'footprint-marker footprint-marker--spot' : 'footprint-marker';
+  el.innerHTML = spot ? '<span aria-hidden="true">🐾</span>' : '<span aria-hidden="true"></span>';
   return el;
 }
 
@@ -206,6 +207,9 @@ function normalizeDateKey(dateValue) {
     const day = String(dateValue.getDate()).padStart(2, '0');
     return `${year}-${month}-${day}`;
   }
+  if (typeof dateValue === 'number' && Number.isFinite(dateValue)) {
+    return normalizeDateKey(new Date(dateValue));
+  }
   const text = String(dateValue).trim();
   const match = text.match(/^(\d{4})-(\d{2})-(\d{2})/);
   if (match) return `${match[1]}-${match[2]}-${match[3]}`;
@@ -236,7 +240,7 @@ function dedupeTripsByDate(trips) {
   const seen = new Set();
   const deduped = [];
   trips.forEach((trip) => {
-    const key = normalizeDateKey(trip.date);
+    const key = trip?.id || normalizeDateKey(trip.date);
     if (seen.has(key)) return;
     seen.add(key);
     deduped.push(trip);
@@ -244,8 +248,59 @@ function dedupeTripsByDate(trips) {
   return deduped;
 }
 
+function getTripDateKeys(trip) {
+  const keys = new Set();
+  const add = (value) => {
+    const key = normalizeDateKey(value);
+    if (key) keys.add(key);
+  };
+  add(trip?.date);
+  (trip?.diary || []).forEach((entry) => {
+    add(entry.timestamp || entry.time);
+  });
+  (trip?.photos || []).forEach((photo) => {
+    add(photo.takenAt || photo.taken_at);
+  });
+  if (trip?.recording?.startedAt) add(trip.recording.startedAt);
+  return keys;
+}
+
+function getEntryDateKey(entry) {
+  return normalizeDateKey(entry?.timestamp || entry?.time);
+}
+
+function getVisibleDiaryEntries(trip) {
+  const diary = Array.isArray(trip?.diary) ? trip.diary : [];
+  if (!diary.length) return [];
+  const filterKey = normalizeDateKey(state.diaryDateFilter);
+  return diary
+    .map((entry, index) => ({ ...entry, sourceIndex: index }))
+    .filter((entry) => !filterKey || getEntryDateKey(entry) === filterKey);
+}
+
+function filterTripForDate(trip, dateKey = state.diaryDateFilter) {
+  const filterKey = normalizeDateKey(dateKey);
+  if (!trip || !filterKey) return trip;
+  const diary = getVisibleDiaryEntries(trip);
+  const photos = (trip.photos || []).filter((photo) => normalizeDateKey(photo.takenAt || photo.taken_at) === filterKey);
+  const samples = (trip.recording?.samples || []).filter((sample) => normalizeDateKey(sample.timestamp) === filterKey);
+  const footprints = (trip.recording?.footprints || []).filter((point) => normalizeDateKey(point.timestamp) === filterKey);
+  const livePhotos = (trip.recording?.livePhotos || []).filter((photo) => normalizeDateKey(photo.takenAt) === filterKey);
+  return {
+    ...trip,
+    diary,
+    photos,
+    recording: {
+      ...(trip.recording || {}),
+      samples,
+      footprints,
+      livePhotos,
+    },
+  };
+}
+
 function getTripByDateKey(dateKey) {
-  return state.savedTrips.find((trip) => normalizeDateKey(trip.date) === dateKey) || null;
+  return state.savedTrips.find((trip) => getTripDateKeys(trip).has(dateKey)) || null;
 }
 
 function getCalendarSelectedDateKey() {
@@ -272,12 +327,13 @@ function selectCalendarDate(dateKey) {
 
   const trip = getTripByDateKey(dateKey);
   if (trip) {
-    pickTrip(trip.id);
-    renderTripOnMap(trip);
+    pickTrip(trip.id, { dateKey });
+    renderTripOnMap(trip, { dateKey });
     closeCalendar();
     return;
   }
 
+  state.diaryDateFilter = null;
   state.trip.date = dateKey;
   const selectedTrip = state.savedTrips.find((item) => item.id === state.selectedTripId) || null;
   const canRetagActiveTrip =
@@ -358,7 +414,12 @@ function renderCalendar() {
   const startOffset = firstDay.getDay();
   const daysInMonth = new Date(year, monthIndex + 1, 0).getDate();
   const selectedDateKey = getCalendarSelectedDateKey();
-  const tripMap = new Map(state.savedTrips.map((trip) => [normalizeDateKey(trip.date), trip]));
+  const tripMap = new Map();
+  state.savedTrips.forEach((trip) => {
+    getTripDateKeys(trip).forEach((key) => {
+      if (!tripMap.has(key)) tripMap.set(key, trip);
+    });
+  });
 
   elements.calendarMonthLabel.textContent = formatCalendarMonth(monthDate);
   elements.calendarGrid.innerHTML = '';
@@ -586,9 +647,8 @@ function mergeTripRecord(existing, incoming) {
 
 function upsertSavedTrip(trip) {
   const record = createTripRecord(trip);
-  const dateKey = normalizeDateKey(record.date);
   const index = state.savedTrips.findIndex(
-    (item) => item.id === record.id || normalizeDateKey(item.date) === dateKey,
+    (item) => item.id === record.id,
   );
   if (index >= 0) {
     state.savedTrips[index] = mergeTripRecord(state.savedTrips[index], record);
@@ -622,6 +682,7 @@ function syncSelectedTripView() {
       region: elements.tripRegion.value.trim() || '미정 지역',
     };
     state.generatedDiary = null;
+    state.diaryDateFilter = null;
     state.diaryUnlocked = false;
     state.acceptedPhotoIds = new Set();
     state.rejectedPhotoIds = new Set();
@@ -650,18 +711,20 @@ function syncSelectedTripView() {
   state.rejectedPhotoIds = new Set((trip.feedback?.rejectedPhotoIds || []).map(String));
   updateTripTexts();
   renderTripHistory();
-  renderTimeline(state.generatedDiary || state.sampleTimeline);
+  const visibleEntries = getVisibleDiaryEntries(trip);
+  renderTimeline(visibleEntries.length ? visibleEntries : state.sampleTimeline);
   updateNavButtons();
   setMapState(getTripMapState(trip));
   return trip;
 }
 
-function pickTrip(tripId) {
+function pickTrip(tripId, { dateKey = null } = {}) {
   state.selectedTripId = tripId;
+  state.diaryDateFilter = dateKey ? normalizeDateKey(dateKey) : null;
   const trip = syncSelectedTripView();
   if (!trip) return;
-  state.calendarSelectedDateKey = normalizeDateKey(trip.date);
-  if (state.screen === 'map') renderTripOnMap(trip);
+  state.calendarSelectedDateKey = normalizeDateKey(dateKey || trip.date);
+  if (state.screen === 'map') renderTripOnMap(trip, { dateKey: state.diaryDateFilter });
 }
 
 function parseExifDate(dateString) {
@@ -980,20 +1043,23 @@ function sortByTakenAt(left, right) {
 function getTripPhotoMapPoints(trip) {
   const points = [];
   const seen = new Set();
-  const addPoint = ({ lngLat, tip = '', imageUrl = '', id = '' }) => {
+  const addPoint = ({ lngLat, tip = '', imageUrl = '', id = '', isMajorSpot = false }) => {
     if (!isValidLngLat(lngLat)) return;
     const key = id || `${lngLat[0].toFixed(6)},${lngLat[1].toFixed(6)},${tip}`;
     if (seen.has(key)) return;
     seen.add(key);
-    points.push({ lngLat, tip, imageUrl });
+    points.push({ lngLat, tip, imageUrl, isMajorSpot });
   };
 
   (trip?.diary || []).forEach((entry, index) => {
+    const duration = Number(entry.durationMinutes || entry.duration_minutes || 0);
+    const count = Number(entry.photoCount || entry.photo_count || 0);
     addPoint({
       lngLat: Array.isArray(entry.center) ? entry.center : null,
       tip: entry.timestamp ? formatTipTime(entry.timestamp) : '',
       imageUrl: entry.mainPhoto || entry.photoUrls?.[0] || '',
       id: entry.photoId || `diary_${index}`,
+      isMajorSpot: count >= 3 || duration >= 5,
     });
   });
 
@@ -1075,19 +1141,20 @@ function getLastSamplePoint(samplePoints) {
   return samplePoints[samplePoints.length - 1] || null;
 }
 
-function renderTripOnMap(trip) {
+function renderTripOnMap(trip, { dateKey = state.diaryDateFilter } = {}) {
   if (!state.map) return;
+  const displayTrip = filterTripForDate(trip, dateKey);
   // 지도 스타일이 아직 로드 전이면 로드 완료 후 다시 그린다 (경로선 addSource 실패 방지)
   if (!state.map.isStyleLoaded()) {
-    state.map.once('idle', () => renderTripOnMap(trip));
+    state.map.once('idle', () => renderTripOnMap(trip, { dateKey }));
     return;
   }
   clearLiveMarkers();
   ensureRouteLayer();
 
-  const samplePoints = getSamplePoints(trip);
-  const footprintPoints = getTripRouteFootprintPoints(trip);
-  const photoPoints = getTripPhotoMapPoints(trip);
+  const samplePoints = getSamplePoints(displayTrip);
+  const footprintPoints = getTripRouteFootprintPoints(displayTrip);
+  const photoPoints = getTripPhotoMapPoints(displayTrip);
   const useRecordedRoute = shouldUseSampleRoute(samplePoints, photoPoints);
   const routePoints = useRecordedRoute
     ? samplePoints
@@ -1102,8 +1169,9 @@ function renderTripOnMap(trip) {
   photoPoints.forEach((point) => {
     if (point.imageUrl) {
       addLivePhotoMarker(point.lngLat, point.imageUrl);
+      if (point.isMajorSpot) addFootprint(point.lngLat, point.tip || '사진이 많이 남은 지점', { spot: true });
     } else {
-      addFootprint(point.lngLat, point.tip);
+      addFootprint(point.lngLat, point.tip, { spot: point.isMajorSpot });
     }
   });
 
@@ -1345,13 +1413,14 @@ function clearLiveMarkers() {
 }
 
 // tip: 커서를 올렸을 때 보여줄 간단 정보 (예: '7월 16일 · 오후 2:30')
-function addFootprint(lngLat, tip) {
+function addFootprint(lngLat, tip, options = {}) {
   if (!state.map) return;
-  const el = makeFootprintElement();
+  const el = makeFootprintElement(options);
   if (tip) el.setAttribute('data-tip', tip);
   const marker = new window.mapboxgl.Marker({
     element: el,
     anchor: 'center',
+    offset: options.spot ? [26, -22] : [0, 0],
   })
     .setLngLat(lngLat)
     .addTo(state.map);
@@ -2656,9 +2725,10 @@ function syncDiaryDeletion(nextEntries, removedEntry) {
 function deleteDiaryEntry(index, entries) {
   if (!Array.isArray(entries) || entries === state.sampleTimeline) return null;
   const source = Array.isArray(state.generatedDiary) ? state.generatedDiary : entries;
-  if (!source[index]) return null;
+  const sourceIndex = Number.isInteger(entries[index]?.sourceIndex) ? entries[index].sourceIndex : index;
+  if (!source[sourceIndex]) return null;
   const nextEntries = source.slice();
-  const [removedEntry] = nextEntries.splice(index, 1);
+  const [removedEntry] = nextEntries.splice(sourceIndex, 1);
   return syncDiaryDeletion(nextEntries, removedEntry);
 }
 
@@ -2779,7 +2849,9 @@ function renderTimeline(entries = state.generatedDiary || state.sampleTimeline) 
 
       const nextEntries = deleteDiaryEntry(index, entries);
       if (!nextEntries) return;
-      renderTimeline(nextEntries.length ? nextEntries : state.sampleTimeline);
+      const trip = getSelectedTrip({ fallback: false });
+      const visibleEntries = trip ? getVisibleDiaryEntries(trip) : nextEntries;
+      renderTimeline(visibleEntries.length ? visibleEntries : state.sampleTimeline);
       updateNavButtons();
       showToast('기록을 삭제했어요.');
     });
@@ -2796,8 +2868,9 @@ function renderTimeline(entries = state.generatedDiary || state.sampleTimeline) 
       const index = Number(button.dataset.saveNote);
       const input = elements.timeline.querySelector(`[data-note-input="${index}"]`);
       if (!input) return;
+      const sourceIndex = Number.isInteger(entries[index]?.sourceIndex) ? entries[index].sourceIndex : index;
       button.disabled = true;
-      const saved = await saveDiaryNote(index, input.value, entries);
+      const saved = await saveDiaryNote(sourceIndex, input.value, entries);
       button.disabled = false;
       if (saved) renderTimeline(entries);
     });
@@ -3214,8 +3287,11 @@ function persistPhotoFeedbackLocally() {
 }
 
 function persistDiaryNoteLocally(entryIndex, note, entries) {
-  if (Array.isArray(entries) && entries[entryIndex]) {
-    entries[entryIndex].note = note;
+  if (Array.isArray(entries)) {
+    const localEntry = entries.find((entry, index) =>
+      (Number.isInteger(entry?.sourceIndex) ? entry.sourceIndex : index) === entryIndex,
+    );
+    if (localEntry) localEntry.note = note;
   }
   if (Array.isArray(state.generatedDiary) && state.generatedDiary[entryIndex]) {
     state.generatedDiary[entryIndex].note = note;
