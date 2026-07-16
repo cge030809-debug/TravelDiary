@@ -1059,11 +1059,12 @@ function renderTripOnMap(trip) {
   ensureRouteLayer();
 
   const samplePoints = getSamplePoints(trip);
+  const footprintPoints = getTripRouteFootprintPoints(trip);
   const photoPoints = getTripPhotoMapPoints(trip);
-  const routePoints = samplePoints.length ? samplePoints : photoPoints;
+  const routePoints = samplePoints.length ? samplePoints : (footprintPoints.length ? footprintPoints : photoPoints);
   setRouteLine(routePoints.map((point) => point.lngLat));
 
-  getTripRouteFootprintPoints(trip).forEach((point) => {
+  footprintPoints.forEach((point) => {
     addFootprint(point.lngLat, point.tip);
   });
 
@@ -1083,6 +1084,8 @@ function renderTripOnMap(trip) {
     focusMapOnPoints(photoPoints);
   } else if (last) {
     centerMapOn(last.lngLat, 15.5);
+  } else if (footprintPoints.length) {
+    focusMapOnPoints(footprintPoints);
   } else if (samplePoints.length) {
     focusMapOnPoints(samplePoints);
   }
