@@ -1,11 +1,11 @@
 const MAPBOX_ACCESS_TOKEN = window.MAPBOX_ACCESS_TOKEN || '';
 const STORAGE_KEY = 'travel-diary.trips.v1';
 const API_BASE_URL = window.API_BASE_URL || '';
-const PHOTO_SPOT_RADIUS_M = 100;
+const PHOTO_SPOT_RADIUS_M = 50;
 const PHOTO_SPOT_MIN_DURATION_MS = 10 * 60 * 1000;
 const PHOTO_SPOT_MIN_COUNT = 5;
 const PHOTO_SPOT_GAP_MS = 10 * 60 * 1000;
-const PHOTO_LOCATION_MATCH_WINDOW_MS = 3 * 60 * 1000;
+const PHOTO_LOCATION_MATCH_WINDOW_MS = 30 * 60 * 1000;
 const PHOTO_LOCATION_MAX_SAMPLE_DISTANCE_M = 30;
 const FOOTPRINT_MIN_DISTANCE_M = 12;
 const FOOTPRINT_MIN_GAP_MS = 8000;
@@ -1136,7 +1136,7 @@ async function generateDiaryFromFiles(files) {
       photoIds: cluster.photos.map((photo) => photo.id),
       time: timeLabel,
       place,
-      note: `반경 ${PHOTO_SPOT_RADIUS_M}m 안에서 ${durationMinutes}분 동안 머무르며 사진 ${photoCount}장을 기록했어요.`,
+      note: `반경 ${PHOTO_SPOT_RADIUS_M}m 안에서 사진 ${photoCount}장을 기록했어요.`,
       photoCount,
       photoUrls,
       mainPhoto: photoUrls[0],
