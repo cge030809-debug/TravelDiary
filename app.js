@@ -2543,10 +2543,92 @@ function bootstrap() {
 // 세로형 영상을 캔버스로 그려 MediaRecorder 로 녹화 → 다운로드.
 // ============================================================
 
-function pickVideoMime() {
+const MEMORY_VIDEO_FORMATS = [
+  { mime: 'video/webm;codecs=vp9,opus', label: 'WEBM' },
+  { mime: 'video/webm;codecs=vp8,opus', label: 'WEBM' },
+  { mime: 'video/webm', label: 'WEBM' },
+  { mime: 'video/mp4;codecs=avc1.42E01E,mp4a.40.2', label: 'MP4' },
+  { mime: 'video/mp4;codecs=h264,aac', label: 'MP4' },
+  { mime: 'video/mp4', label: 'MP4' },
+];
+
+function pickVideoFormat() {
   if (typeof MediaRecorder === 'undefined') return null;
-  const candidates = ['video/mp4', 'video/webm;codecs=vp9', 'video/webm'];
-  return candidates.find((m) => MediaRecorder.isTypeSupported(m)) || null;
+  return MEMORY_VIDEO_FORMATS.find((format) => MediaRecorder.isTypeSupported(format.mime))
+    || { mime: '', label: '기본 영상' };
+}
+
+function getVideoExtension(mime) {
+  const normalized = (mime || '').toLowerCase();
+  if (normalized.includes('mp4')) return 'mp4';
+  return 'webm';
+}
+
+function getVideoLabel(mime) {
+  return getVideoExtension(mime).toUpperCase();
+}
+
+function getVideoBaseMime(mime) {
+  return getVideoExtension(mime) === 'mp4' ? 'video/mp4' : 'video/webm';
+}
+
+function downloadMemoryVideo(blob, fileName) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
+function getVideoSaveTypes(mime) {
+  const ext = getVideoExtension(mime);
+  const type = getVideoBaseMime(mime);
+  return [{
+    description: `${ext.toUpperCase()} 영상`,
+    accept: { [type]: [`.${ext}`] },
+  }];
+}
+
+async function saveMemoryVideo(blob, fileName, mime) {
+  if (typeof window.showSaveFilePicker === 'function') {
+    try {
+      const handle = await window.showSaveFilePicker({
+        suggestedName: fileName,
+        types: getVideoSaveTypes(mime),
+      });
+      const writable = await handle.createWritable();
+      await writable.write(blob);
+      await writable.close();
+      return 'saved';
+    } catch (error) {
+      if (error?.name === 'AbortError') return 'cancelled';
+      console.warn('failed to save video with file picker', error);
+    }
+  }
+
+  const nav = typeof navigator !== 'undefined' ? navigator : null;
+  if (typeof File !== 'undefined' && nav?.share && nav?.canShare) {
+    try {
+      const file = new File([blob], fileName, { type: getVideoBaseMime(mime || blob.type) });
+      if (nav.canShare({ files: [file] })) {
+        await nav.share({
+          files: [file],
+          title: 'Travel Diary 추억 영상',
+          text: '오늘의 발자취 영상이에요.',
+        });
+        return 'shared';
+      }
+    } catch (error) {
+      if (error?.name === 'AbortError') return 'cancelled';
+      console.warn('failed to share video file', error);
+    }
+  }
+
+  downloadMemoryVideo(blob, fileName);
+  return 'downloaded';
 }
 
 function loadImageForCanvas(src) {
@@ -2800,12 +2882,12 @@ async function createMemoryVideo() {
     showToast('먼저 사진으로 다이어리를 만들어 주세요.');
     return;
   }
-  const mime = pickVideoMime();
-  if (!mime || !HTMLCanvasElement.prototype.captureStream) {
+  const format = pickVideoFormat();
+  if (!format || !HTMLCanvasElement.prototype.captureStream) {
     showToast('이 브라우저는 영상 만들기를 지원하지 않아요.');
     return;
   }
-  if (!window.confirm('추억 영상을 만들어 다운로드할까요? (배경음악 포함 · 15초 정도 걸려요)')) return;
+  if (!window.confirm('추억 영상을 만들어 저장할까요? (배경음악 포함 · 15초 정도 걸려요)')) return;
 
   const button = elements.memoryVideoButton;
   if (button) { button.disabled = true; button.textContent = '🎬 만드는 중…'; }
@@ -2864,7 +2946,9 @@ async function createMemoryVideo() {
       ...audioDest.stream.getAudioTracks(),
     ]);
 
-    const recorder = new MediaRecorder(mixed, { mimeType: mime, videoBitsPerSecond: 6_000_000 });
+    const recorderOptions = { videoBitsPerSecond: 6_000_000 };
+    if (format.mime) recorderOptions.mimeType = format.mime;
+    const recorder = new MediaRecorder(mixed, recorderOptions);
     const chunks = [];
     recorder.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
     const done = new Promise((resolve) => { recorder.onstop = resolve; });
@@ -3075,17 +3159,16 @@ async function createMemoryVideo() {
     recorder.stop();
     await done;
 
-    const ext = mime.startsWith('video/mp4') ? 'mp4' : 'webm';
-    const blob = new Blob(chunks, { type: mime });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `travel-diary-${state.trip.date || 'memory'}.${ext}`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    window.setTimeout(() => URL.revokeObjectURL(url), 5000);
-    showToast('추억 영상을 다운로드했어요 🎬');
+    const recordedMime = recorder.mimeType || chunks.find((chunk) => chunk.type)?.type || format.mime || 'video/webm';
+    const ext = getVideoExtension(recordedMime);
+    const blob = new Blob(chunks, { type: getVideoBaseMime(recordedMime) });
+    const fileName = `travel-diary-${state.trip.date || 'memory'}.${ext}`;
+    const saveResult = await saveMemoryVideo(blob, fileName, recordedMime);
+    const formatLabel = getVideoLabel(recordedMime);
+    if (saveResult === 'saved') showToast(`${formatLabel} 영상이 선택한 위치에 저장됐어요 🎬`);
+    else if (saveResult === 'shared') showToast(`${formatLabel} 영상을 공유창으로 보냈어요 🎬`);
+    else if (saveResult === 'cancelled') showToast('영상 저장을 취소했어요.');
+    else showToast(`${formatLabel} 영상을 다운로드했어요 🎬`);
   } catch (error) {
     console.error(error);
     showToast('영상 만들기에 실패했어요.');
