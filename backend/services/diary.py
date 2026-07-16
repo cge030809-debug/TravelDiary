@@ -59,12 +59,12 @@ def _fallback_note(entry: TimelineEntry) -> str:
     place = _clean_place(entry.place)
     part = _time_of_day(entry)
     if place == "이동 중":
-        return f"{part} 이동 구간에서 남긴 기록. 경로 흐름을 이어 주는 장면으로 정리했어요."
+        return f"{part}, 이동하는 길 위에서 남긴 한 장면. 어디로 향하던 중이었는지 이어서 적어 보세요."
 
     templates = [
-        f"{part} {place}에서 남긴 기록. 이 위치가 오늘 동선의 한 지점으로 선명하게 잡혔어요.",
-        f"{place}에 머문 흔적을 {part} 기록으로 묶었어요. 사진과 위치가 같은 흐름 안에 있어요.",
-        f"{part}의 {place} 기록. 이동 중 지나친 곳이 아니라 잠시 멈춘 지점으로 정리했어요.",
+        f"{part}의 {place}. 이곳에서 잠시 걸음을 멈추고 한 장면을 남겼다. 그때의 공기와 소리를 이어서 적어 보세요.",
+        f"{place}, {part}. 사진 속 장면이 이 자리의 기억을 붙잡아 두었다. 함께 있었던 사람이나 나눈 이야기를 덧붙여 보세요.",
+        f"{part}에 들른 {place}. 지도 위 발자취가 이 지점에서 멈춰 있었다. 왜 여기서 멈췄는지 이어서 적어 보세요.",
     ]
     return templates[_template_index(entry, len(templates))]
 
