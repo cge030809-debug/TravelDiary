@@ -96,6 +96,14 @@ def get_diary(trip_id: str):
     return diary
 
 
+@app.get("/api/trips/latest")
+def latest_trip():
+    trip_id = storage.get_latest_trip_id()
+    if trip_id is None:
+        raise HTTPException(404, "저장된 여행이 없습니다.")
+    return {"trip_id": trip_id}
+
+
 def _require_trip(trip_id: str) -> None:
     if not storage.exists(trip_id):
         raise HTTPException(404, "존재하지 않는 여행입니다.")

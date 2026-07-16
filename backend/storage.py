@@ -180,3 +180,13 @@ def get_photo_feedback(trip_id: str) -> Optional[PhotoFeedback]:
     if not row or row["photo_feedback_json"] is None:
         return None
     return _load_feedback(row["photo_feedback_json"])
+
+
+def get_latest_trip_id() -> Optional[str]:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT trip_id FROM trips ORDER BY rowid DESC LIMIT 1"
+        ).fetchone()
+    if not row:
+        return None
+    return row["trip_id"]

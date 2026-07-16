@@ -709,7 +709,19 @@ function diaryFromApi(diary) {
 }
 
 async function restoreLastTrip() {
-  const tripId = loadLastTripId();
+  let tripId = loadLastTripId();
+  if (!tripId) {
+    try {
+      const latestResponse = await fetch(buildApiUrl('/api/trips/latest'));
+      if (latestResponse.ok) {
+        const latest = await latestResponse.json();
+        tripId = latest.trip_id || null;
+        if (tripId) saveLastTripId(tripId);
+      }
+    } catch (error) {
+      console.warn('failed to load latest trip id', error);
+    }
+  }
   if (!tripId) return false;
 
   try {
