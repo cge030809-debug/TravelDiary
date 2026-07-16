@@ -824,6 +824,13 @@ function buildApiUrl(path) {
   return `${API_BASE_URL.replace(/\/$/, '')}${path}`;
 }
 
+// 백엔드가 주는 상대경로(/uploads/..)를 절대 URL로 변환
+function toAbsolutePhotoUrl(url) {
+  if (!url) return '';
+  if (/^https?:\/\//.test(url) || url.startsWith('data:')) return url;
+  return buildApiUrl(url);
+}
+
 function updateNavButtons() {
   elements.navButtons.forEach((button) => {
     const target = button.dataset.nav;
@@ -1307,6 +1314,68 @@ async function restoreLastTrip() {
     console.warn('failed to restore last trip', error);
     return false;
   }
+}
+
+// 백엔드 AI 파이프라인(/generate)으로 다이어리 생성 — 위치별 대표사진 1장 자동 선별
+async function generateDiaryFromBackend() {
+  if (!state.tripId) return false;
+  let data;
+  try {
+    const response = await fetch(buildApiUrl(`/api/trips/${state.tripId}/generate`), { method: 'POST' });
+    if (!response.ok) throw new Error(`generate failed: ${response.status}`);
+    data = await response.json();
+  } catch (error) {
+    console.error(error);
+    return false;
+  }
+
+  const timeline = Array.isArray(data.timeline) ? data.timeline : [];
+  if (!timeline.length) return false;
+
+  const entries = timeline.map((entry, index) => {
+    const when = entry.time ? new Date(entry.time) : null;
+    const photo = entry.photo_url ? toAbsolutePhotoUrl(entry.photo_url) : '';
+    const hasCenter = Number.isFinite(entry.lng) && Number.isFinite(entry.lat);
+    return {
+      time: when && !Number.isNaN(when.getTime()) ? formatRoundedTimeLabel(when) : '',
+      place: entry.place || `기록 스팟 ${index + 1}`,
+      note: entry.note || '',
+      photoUrls: photo ? [photo] : [],
+      mainPhoto: photo || null,
+      photoCount: 1,
+      center: hasCenter ? [entry.lng, entry.lat] : null,
+      timestamp: when && !Number.isNaN(when.getTime()) ? when : new Date(),
+      dateLabel: data.title || state.trip.title || '여행',
+    };
+  });
+
+  state.generatedDiary = entries;
+  state.diaryUnlocked = true;
+  if (data.title && !state.trip.title) {
+    state.trip.title = data.title;
+    updateTripTexts();
+  }
+  if (state.activeTrip) {
+    state.activeTrip.status = 'completed';
+    state.activeTrip.diary = entries;
+    state.activeTrip.photos = entries
+      .filter((e) => e.center)
+      .map((e, i) => ({
+        id: `sel_${i}`,
+        dataUrl: e.mainPhoto,
+        takenAt: (e.timestamp instanceof Date ? e.timestamp : new Date(e.timestamp)).toISOString(),
+        lng: e.center[0],
+        lat: e.center[1],
+      }));
+    upsertSavedTrip(state.activeTrip);
+    renderTripOnMap(state.activeTrip);
+  }
+  updateNavButtons();
+  renderTripHistory();
+  renderTimeline(entries);
+  setScreen('diary');
+  showToast('AI가 위치별 대표 사진을 골라 다이어리를 만들었어요 ✨');
+  return true;
 }
 
 async function generateDiaryFromFiles(files) {
@@ -1838,11 +1907,20 @@ function bootstrap() {
     if (!files.length) return;
     try {
       await uploadPhotosToApi(files);
-      await generateDiaryFromFiles(files);
+      // 1순위: 백엔드 AI 선별 파이프라인. 실패하면 클라이언트 처리로 폴백.
+      const usedBackend = await generateDiaryFromBackend();
+      if (!usedBackend) {
+        await generateDiaryFromFiles(files);
+      }
     } catch (error) {
       console.error(error);
       setUploadProgress('', false);
-      showToast('사진 업로드 또는 처리 중 오류가 발생했어요.');
+      try {
+        await generateDiaryFromFiles(files);
+      } catch (fallbackError) {
+        console.error(fallbackError);
+        showToast('사진 업로드 또는 처리 중 오류가 발생했어요.');
+      }
     }
   });
 
