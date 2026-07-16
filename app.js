@@ -5,6 +5,7 @@ const TRIP_DB_VERSION = 1;
 const TRIP_DB_STORE = 'state';
 const TRIP_DB_KEY = 'trips';
 const API_BASE_URL = window.API_BASE_URL || '';
+const DEMO_TRIP_MANIFEST_URL = '/demo/europe-summer/manifest.json';
 const PHOTO_SPOT_RADIUS_M = 100;
 const PHOTO_SPOT_GAP_MS = 2 * 60 * 1000;
 const REPRESENTATIVE_PHOTOS_PER_SPOT = 3;
@@ -111,6 +112,7 @@ const elements = {
   photoImportProgress: document.getElementById('photo-import-progress'),
   photoInput: document.getElementById('photo-input'),
   createUploadButton: document.getElementById('create-upload-button'),
+  createDemoButton: document.getElementById('create-demo-button'),
   livePhotoButton: document.getElementById('live-photo-button'),
   livePhotoInput: document.getElementById('live-photo-input'),
   startRecording: document.getElementById('start-recording'),
@@ -2246,7 +2248,7 @@ async function generateDiaryFromFiles(files) {
   return generateDiaryFromPhotoData(parsed);
 }
 
-async function generateDiaryFromPhotoData(parsed) {
+async function generateDiaryFromPhotoData(parsed, options = {}) {
   const photoData = parsed
     .map((photo) => {
       const estimated = estimatePhotoLocation(photo);
@@ -2266,14 +2268,18 @@ async function generateDiaryFromPhotoData(parsed) {
 
   cleanupGeneratedPhotoUrls();
   state.photoUrls = photoData.map((photo) => photo.url);
-  syncTripDateFromPhotos(photoData);
+  if (!options.skipDateSync) {
+    syncTripDateFromPhotos(photoData);
+  }
 
   photoData.sort((a, b) => a.takenAt - b.takenAt);
   const photoById = new Map(photoData.map((photo) => [photo.id, photo]));
   const dateKeys = [...new Set(photoData.map((photo) => getLocalDateKey(photo.takenAt)).filter(Boolean))];
-  const allowCrossDate = dateKeys.length > 1
-    ? window.confirm('사진 날짜가 달라요. 같은 여행으로 이어서 묶을까요?')
-    : false;
+  const allowCrossDate = options.allowCrossDate ?? (
+    dateKeys.length > 1
+      ? window.confirm('사진 날짜가 달라요. 같은 여행으로 이어서 묶을까요?')
+      : false
+  );
   const clusters = buildClusters(photoData, allowCrossDate);
   const targetClusters = clusters;
   const entries = [];
@@ -2284,8 +2290,9 @@ async function generateDiaryFromPhotoData(parsed) {
     const firstPhoto = cluster.photos[0];
     const durationMinutes = Math.max(1, Math.round((cluster.lastTakenAt - cluster.firstTakenAt) / 60000));
     const timeLabel = formatRoundedTimeLabel(firstPhoto.takenAt);
-    const fallbackPlace = `기록 스팟 ${i + 1}`;
-    const place = await resolvePlaceName(cluster.center[0], cluster.center[1], fallbackPlace);
+    const placeHint = firstPhoto.demoPlace || firstPhoto.place || '';
+    const fallbackPlace = placeHint || `기록 스팟 ${i + 1}`;
+    const place = placeHint || await resolvePlaceName(cluster.center[0], cluster.center[1], fallbackPlace);
     const photoCount = cluster.photos.length;
     const selectedPhotos = selectRepresentativePhotos(cluster.photos);
     const photoUrls = selectedPhotos.map((photo) => photo.url || photo.dataUrl).filter(Boolean);
@@ -2318,7 +2325,8 @@ async function generateDiaryFromPhotoData(parsed) {
     state.activeTrip.photos = photoData.map((photo) => ({
       id: photo.id,
       fileName: photo.fileName,
-      dataUrl: photo.dataUrl,
+      dataUrl: photo.dataUrl || photo.url || '',
+      url: photo.url || '',
       takenAt: photo.takenAt.toISOString(),
       lat: photo.lat,
       lng: photo.lng,
@@ -2339,7 +2347,127 @@ async function generateDiaryFromPhotoData(parsed) {
   renderTripHistory();
   renderTimeline(entries);
   setScreen('diary');
-  showToast('오늘의 여정이 다이어리로 정리되었습니다.');
+  showToast(options.successMessage || '오늘의 여정이 다이어리로 정리되었습니다.');
+}
+
+function buildDemoRouteSamples(photoData) {
+  return photoData
+    .filter((photo) =>
+      photo.takenAt instanceof Date &&
+      !Number.isNaN(photo.takenAt.getTime()) &&
+      Number.isFinite(photo.lng) &&
+      Number.isFinite(photo.lat),
+    )
+    .sort((a, b) => a.takenAt - b.takenAt)
+    .map((photo) => ({
+      lng: photo.lng,
+      lat: photo.lat,
+      timestamp: photo.takenAt.getTime(),
+    }));
+}
+
+function demoPhotosFromManifest(manifest) {
+  const basePath = manifest.basePath || '/demo/europe-summer/';
+  return (manifest.photos || []).map((item, index) => {
+    const takenAt = new Date(item.takenAt);
+    return {
+      id: item.id || `demo_photo_${index + 1}`,
+      fileName: item.fileName || item.src || `demo-photo-${index + 1}.jpg`,
+      url: `${basePath}${item.src}`,
+      dataUrl: `${basePath}${item.src}`,
+      takenAt: Number.isNaN(takenAt.getTime()) ? new Date() : takenAt,
+      lat: Number(item.lat),
+      lng: Number(item.lng),
+      demoPlace: item.place || '',
+    };
+  });
+}
+
+async function startDemoTrip() {
+  if (!elements.createDemoButton) return;
+  elements.createDemoButton.disabled = true;
+  showToast('시연 사진을 불러오는 중이에요.');
+  try {
+    const response = await fetch(DEMO_TRIP_MANIFEST_URL, { cache: 'no-store' });
+    if (!response.ok) throw new Error(`Demo manifest failed: ${response.status}`);
+    const manifest = await response.json();
+    const photoData = demoPhotosFromManifest(manifest)
+      .filter((photo) => Number.isFinite(photo.lat) && Number.isFinite(photo.lng));
+    if (!photoData.length) throw new Error('No demo photos with coordinates');
+
+    cleanupGeneratedPhotoUrls();
+    stopTracking();
+    const samples = buildDemoRouteSamples(photoData);
+    const first = samples[0] || null;
+    const last = samples[samples.length - 1] || null;
+    const tripDate = manifest.date || getLocalDateKey(photoData[0].takenAt);
+    const trip = {
+      id: manifest.id || 'demo_europe_summer',
+      title: manifest.title || '시연 여행',
+      date: tripDate,
+      region: manifest.region || '시연 지역',
+      createdAt: first ? new Date(first.timestamp).toISOString() : new Date().toISOString(),
+      status: 'recorded',
+      recording: {
+        startedAt: first ? new Date(first.timestamp).toISOString() : null,
+        endedAt: last ? new Date(last.timestamp).toISOString() : null,
+        elapsed: first && last ? Math.max(0, Math.round((last.timestamp - first.timestamp) / 1000)) : 0,
+        samples,
+        footprints: buildFootprintsFromSamples(samples),
+        livePhotos: [],
+      },
+      diary: [],
+      photos: [],
+      feedback: {
+        acceptedPhotoIds: [],
+        rejectedPhotoIds: [],
+      },
+    };
+
+    state.tripId = null;
+    state.activeTripId = trip.id;
+    state.activeTrip = trip;
+    state.selectedTripId = trip.id;
+    state.trip = {
+      title: trip.title,
+      date: trip.date,
+      region: trip.region,
+    };
+    state.calendarSelectedDateKey = normalizeDateKey(trip.date);
+    state.locationSamples = samples;
+    state.pendingLocationPoints = [];
+    state.lastLocationSyncAt = 0;
+    state.recordingStartedAt = null;
+    state.recordingElapsed = 0;
+    state.recordingBonusSeconds = 0;
+    state.acceptedPhotoIds = new Set();
+    state.rejectedPhotoIds = new Set();
+    state.generatedDiary = null;
+    state.diaryUnlocked = false;
+
+    elements.tripTitle.value = trip.title;
+    elements.tripDate.value = trip.date;
+    elements.tripRegion.value = trip.region;
+    saveCreateFormState();
+    clearLiveMarkers();
+    updateTripTexts();
+    upsertSavedTrip(trip);
+    renderTripHistory();
+    setScreen('map');
+    setMapState('after');
+    renderTripOnMap(trip);
+
+    await generateDiaryFromPhotoData(photoData, {
+      allowCrossDate: true,
+      skipDateSync: true,
+      successMessage: '시연 사진으로 다이어리를 만들었어요.',
+    });
+  } catch (error) {
+    console.error(error);
+    showToast('시연 데이터를 불러오지 못했어요.');
+  } finally {
+    elements.createDemoButton.disabled = false;
+  }
 }
 
 function getEntryFeedbackIds(entry) {
@@ -3037,6 +3165,7 @@ function bootstrap() {
   });
   elements.createTripButton.addEventListener('click', startRealtimeTrip);
   elements.createUploadButton?.addEventListener('click', startUploadTrip);
+  elements.createDemoButton?.addEventListener('click', startDemoTrip);
   elements.createDiaryButton?.addEventListener('click', () => handleNav('diary'));
   elements.createPhotoImportButton?.addEventListener('click', () => {
     elements.photoInput.value = '';

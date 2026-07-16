@@ -1093,6 +1093,16 @@ textarea:focus-visible {
   background: linear-gradient(180deg, #fff7f1 0%, #ffe2d2 100%);
 }
 
+.mode-choice--demo {
+  border-color: rgba(82, 119, 133, 0.28);
+  background: linear-gradient(180deg, #f7fbfc 0%, #eaf2f3 100%);
+}
+
+.mode-choice--demo .mode-choice-icon {
+  background: #527785;
+  color: #ffffff;
+}
+
 .mode-choice-icon {
   display: inline-grid;
   place-items: center;

@@ -1,4 +1,4 @@
-import { mkdir, writeFile, copyFile } from 'fs/promises';
+import { mkdir, writeFile, copyFile, cp } from 'fs/promises';
 import { resolve } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -13,6 +13,13 @@ async function copyAsset(fileName) {
   await copyFile(resolve(rootDir, fileName), resolve(distDir, fileName));
 }
 
+async function copyDirectory(name) {
+  await cp(resolve(rootDir, name), resolve(distDir, name), {
+    recursive: true,
+    force: true,
+  });
+}
+
 async function main() {
   await ensureDir(distDir);
   await Promise.all([
@@ -22,6 +29,7 @@ async function main() {
     'manifest.json',
     'service-worker.js',
   ].map(copyAsset));
+  await copyDirectory('demo');
 
   const token = process.env.MAPBOX_ACCESS_TOKEN || '';
   // 백엔드 API 주소: 환경변수 우선, 없으면 Railway 배포 주소 기본값.
