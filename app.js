@@ -1,9 +1,10 @@
 const MAPBOX_ACCESS_TOKEN = window.MAPBOX_ACCESS_TOKEN || '';
 const API_BASE_URL = window.API_BASE_URL || '';
-const PHOTO_SPOT_RADIUS_M = 100;
+const PHOTO_SPOT_RADIUS_M = 30;
 const PHOTO_SPOT_MIN_DURATION_MS = 10 * 60 * 1000;
 const PHOTO_SPOT_MIN_COUNT = 3;
 const PHOTO_SPOT_GAP_MS = 5 * 60 * 1000;
+const PHOTO_SPOT_MAX_SAME_PLACE_GAP_MS = 30 * 60 * 1000;
 const FOOTPRINT_MIN_DISTANCE_M = 12;
 const FOOTPRINT_MIN_GAP_MS = 15 * 1000;
 const FOOTPRINT_MIN_REPEAT_DISTANCE_M = 1;
@@ -32,9 +33,9 @@ const state = {
   generatedDiary: null,
   photoUrls: [],
   trip: {
-    title: '탈린의 겨울 산책',
+    title: '',
     date: '2026-07-15',
-    region: '에스토니아 탈린',
+    region: '',
   },
   sampleTimeline: [
     {
@@ -577,7 +578,7 @@ function buildClusters(photos, allowCrossDate = false) {
     const photoPoint = [photo.lng, photo.lat];
     const photoTime = photo.takenAt.getTime();
     const photoDateKey = getLocalDateKey(photo.takenAt);
-    const photoPlaceKey = `${photoDateKey}:${Math.round(photo.lat * 1000)}:${Math.round(photo.lng * 1000)}`;
+    const photoPlaceKey = `${photoDateKey}:${Math.round(photo.lat * 10000)}:${Math.round(photo.lng * 10000)}`;
     if (
       lastGroup &&
       (allowCrossDate || lastGroup.dateKey === photoDateKey) &&
@@ -588,6 +589,7 @@ function buildClusters(photos, allowCrossDate = false) {
       const distanceToCenter = distanceMeters(lastGroup.center, photoPoint);
       if (
         gap <= PHOTO_SPOT_GAP_MS &&
+        gap <= PHOTO_SPOT_MAX_SAME_PLACE_GAP_MS &&
         distanceToAnchor <= PHOTO_SPOT_RADIUS_M &&
         distanceToCenter <= PHOTO_SPOT_RADIUS_M
       ) {
@@ -896,9 +898,9 @@ function renderTimeline(entries = state.generatedDiary || state.sampleTimeline) 
 
 function syncCreateFields() {
   const stored = loadCreateFormState();
-  elements.tripTitle.value = stored.title || state.trip.title;
+  elements.tripTitle.value = stored.title || state.trip.title || '';
   elements.tripDate.value = stored.date || state.trip.date;
-  elements.tripRegion.value = stored.region || state.trip.region;
+  elements.tripRegion.value = stored.region || state.trip.region || '';
 }
 
 function saveCreateFormState() {
@@ -1006,11 +1008,11 @@ function createTrip() {
 
 function handleNav(target) {
   if (target === 'back') {
-    const previous = state.previousScreen || 'create';
-    setScreen(previous);
-    if (previous === 'map') {
-      setMapState(state.mapState);
+    if (state.diaryUnlocked) {
+      setScreen('diary');
+      return;
     }
+    setScreen(state.previousScreen || 'create');
     return;
   }
   setScreen(target);
